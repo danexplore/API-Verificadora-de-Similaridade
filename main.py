@@ -1,15 +1,22 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
 from dotenv import load_dotenv
+import requests
 
 # Carregar variáveis de ambiente do .env
 load_dotenv()
 
+ELASTIC_URL_TOKEN = os.getenv("ELASTIC_URL_TOKEN")
+
 # Configuração do Elasticsearch (Elastic Cloud)
-ELASTICSEARCH_URL = "https://6989d0bb119d4c8ab118c2b7113a0d31.southamerica-east1.gcp.elastic-cloud.com:443"
+ELASTICSEARCH_URL = f"https://{ELASTIC_URL_TOKEN}.southamerica-east1.gcp.elastic-cloud.com:443"
 ENCODED_CREDENTIALS = os.getenv('encoded')
+
+# Configuração do Pipefy
+PIPEFY_API_URL = "https://api.pipefy.com/graphql"
+PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_TOKEN')
 
 # Inicializar cliente do Elasticsearch
 client = Elasticsearch(
@@ -28,11 +35,14 @@ def home():
     return {"message": "API de Similaridade de Cursos Online!"}
 
 @app.get("/buscar/")
-def buscar_similaridade(nome: str):
+async def buscar_similaridade(nome: str, card_id: str):
     """
-    Busca cursos similares no Elasticsearch usando apenas o nome do curso.
+    Busca cursos similares no Elasticsearch usando apenas o nome do curso e atualiza o campo do cartão no Pipefy.
     """
     try:
+        if not nome or not card_id:
+            raise HTTPException(status_code=400, detail="Nome do curso e ID do cartão são obrigatórios.")
+
         # Gerar embedding do nome do curso
         query_vector = model.encode(nome).tolist()
 
@@ -59,17 +69,46 @@ def buscar_similaridade(nome: str):
 
         # Processar os resultados
         cursos_similares = []
+        cursos_similares.append("🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n")
+
         for curso in resultados:
             cursos_similares.append(
-                f"--------------------------------------------------\n"
                 f"📌 Curso Similar: {curso['_source']['nome']}\n"
                 f"📊 Similaridade: {round((curso['_score'] / 2.0) * 100, 2)}%\n"
                 f"👨‍🏫 Coordenador: {curso['_source']['coordenador']}\n"
                 f"📌 Situação: {curso['_source']['situacao']}\n"
-                f"🆕 Versão: {curso['_source']['versao']}"
+                f"🆕 Versão: {curso['_source']['versao']}\n"
+                f"--------------------------------------------------\n"
             )
 
-        return {"cursos_similares": cursos_similares}
+        cursos_similares_str = "\n".join(cursos_similares)
+
+        # Atualizar o campo do cartão no Pipefy
+        mutation = """
+        mutation {
+            updateCardField(input: {
+                card_id: "%s",
+                field_id: "cursos_similares",
+                new_value: "%s"
+            }) {
+                card {
+                    id
+                }
+            }
+        }
+        """ % (card_id, cursos_similares_str)
+
+        headers = {
+            "Authorization": f"Bearer {PIPEFY_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        pipefy_response = requests.post(PIPEFY_API_URL, json={"query": mutation}, headers=headers)
+
+        if pipefy_response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Erro ao atualizar o campo do cartão no Pipefy.")
+
+        return {"message": "Campo do cartão atualizado com sucesso.", "cursos_similares": cursos_similares}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
