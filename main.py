@@ -32,11 +32,11 @@ model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 
 @app.get("/")
-def home():
+async def home():
     return {"message": "API de Similaridade de Cursos Online!"}
 
-@app.post("/buscar/")
-def buscar_similaridade(nome: str, card_id: str):
+@app.get("/buscar/")
+async def buscar_similaridade(nome: str, card_id: str):
     """
     Busca cursos similares no Elasticsearch usando apenas o nome do curso e atualiza o campo do cartão no Pipefy.
     """
@@ -113,6 +113,3 @@ def buscar_similaridade(nome: str, card_id: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
