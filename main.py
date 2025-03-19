@@ -60,13 +60,14 @@ def buscar_similaridade(nome: str):
         # Processar os resultados
         cursos_similares = []
         for curso in resultados:
-            cursos_similares.append({
-                "nome": curso["_source"]["nome"],
-                "similaridade": round((curso["_score"] / 2.0) * 100, 2),
-                "coordenador": curso["_source"]["coordenador"],
-                "situacao": curso["_source"]["situacao"],
-                "versao": curso["_source"]["versao"]
-            })
+            cursos_similares.append(
+                f"--------------------------------------------------\n"
+                f"📌 Curso Similar: {curso['_source']['nome']}\n"
+                f"📊 Similaridade: {round((curso['_score'] / 2.0) * 100, 2)}%\n"
+                f"👨‍🏫 Coordenador: {curso['_source']['coordenador']}\n"
+                f"📌 Situação: {curso['_source']['situacao']}\n"
+                f"🆕 Versão: {curso['_source']['versao']}"
+            )
 
         return {"cursos_similares": cursos_similares}
 
