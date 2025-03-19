@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
 from dotenv import load_dotenv
 import requests
+import uvicorn
 
 # Carregar variáveis de ambiente do .env
 load_dotenv()
@@ -35,7 +36,7 @@ def home():
     return {"message": "API de Similaridade de Cursos Online!"}
 
 @app.get("/buscar/")
-async def buscar_similaridade(nome: str, card_id: str):
+def buscar_similaridade(nome: str, card_id: str):
     """
     Busca cursos similares no Elasticsearch usando apenas o nome do curso e atualiza o campo do cartão no Pipefy.
     """
@@ -108,7 +109,10 @@ async def buscar_similaridade(nome: str, card_id: str):
         if pipefy_response.status_code != 200:
             raise HTTPException(status_code=500, detail="Erro ao atualizar o campo do cartão no Pipefy.")
 
-        return {"message": "Campo do cartão atualizado com sucesso.", "cursos_similares": cursos_similares}
+        return {"message": "Campo do cartão atualizado com sucesso.", "cursos_similares": cursos_similares_str}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)
