@@ -35,7 +35,7 @@ app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 def home():
     return {"message": "API de Similaridade de Cursos Online!"}
 
-@app.get("/buscar/")
+@app.post("/buscar/")
 def buscar_similaridade(nome: str, card_id: str):
     """
     Busca cursos similares no Elasticsearch usando apenas o nome do curso e atualiza o campo do cartão no Pipefy.
