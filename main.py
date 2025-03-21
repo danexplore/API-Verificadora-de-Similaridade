@@ -4,7 +4,6 @@ from elasticsearch import Elasticsearch
 import os
 from dotenv import load_dotenv
 import requests
-import uvicorn
 import unicodedata
 import re
 
