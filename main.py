@@ -5,6 +5,17 @@ import os
 from dotenv import load_dotenv
 import requests
 import uvicorn
+import unicodedata
+import re
+
+def preparar_para_embedding(texto: str) -> str:
+    # Remover acentos
+    texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("utf-8")
+    # Remover símbolos que não ajudam semanticamente
+    texto = re.sub(r"[\[\]\(\)\:\-\_]", " ", texto)
+    # Remover múltiplos espaços e deixar minúsculo
+    texto = re.sub(r"\s+", " ", texto).strip().lower()
+    return texto
 
 # Carregar variáveis de ambiente do .env
 load_dotenv()
@@ -45,7 +56,7 @@ async def buscar_similaridade(nome: str, card_id: str):
             raise HTTPException(status_code=400, detail="Nome do curso e ID do cartão são obrigatórios.")
 
         # Gerar embedding do nome do curso
-        query_vector = model.encode(nome).tolist()
+        query_vector = model.encode(preparar_para_embedding(nome)).tolist()
 
         # Criar a query para busca por similaridade no Elasticsearch
         query = {
