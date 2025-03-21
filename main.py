@@ -124,3 +124,4 @@ async def buscar_similaridade(nome: str, card_id: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
+    
