@@ -59,7 +59,7 @@ async def buscar_similaridade(nome: str, card_id: str):
 
         # Criar a query para busca por similaridade no Elasticsearch
         query = {
-            "size": 5,
+            "size": 10,
             "query": {
                 "script_score": {
                     "query": {"match_all": {}},
