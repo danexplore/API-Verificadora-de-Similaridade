@@ -1,20 +1,17 @@
-# Use the official Python image from the Docker Hub
-FROM python:3.9-slim
+# Usa uma imagem oficial do Python
+FROM python:3.11-slim
 
-# Set the working directory in the container
+# Cria diretório da aplicação
 WORKDIR /app
 
-# Copy the requirements file into the container
-COPY requirements.txt .
+# Copia os arquivos do projeto
+COPY . /app
 
-# Install the dependencies
+# Instala as dependências
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code into the container
-COPY . .
-
-# Expose the port that the app will run on
+# Expõe a porta da API (exemplo: 8000)
 EXPOSE 8000
 
-# Command to run the application
+# Comando para iniciar a API (ajuste conforme seu app)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
