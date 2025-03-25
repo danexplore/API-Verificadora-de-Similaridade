@@ -36,7 +36,7 @@ client = Elasticsearch(
 )
 
 # Inicializar modelo de embeddings
-model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2', cache_folder='/app/models')
 
 # Inicializar FastAPI
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
