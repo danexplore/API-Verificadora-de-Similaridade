@@ -126,7 +126,7 @@ async def buscar_similaridade(nome: str, card_id: str = None, resumo: str = None
         # Processar resultados com limiar mínimo de similaridade (ex: 60%)
         cursos_similares = ["🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n"]
         for curso in resultados:
-            score_percentual = round(((curso['_score'] + 1) / 2.0) * 100, 2)
+            score_percentual = round(((curso['_score'] + 1) / 2.0) * 85, 0)
             if score_percentual < 60:
                 continue  # Ignora cursos com baixa similaridade
 
@@ -174,3 +174,6 @@ async def buscar_similaridade(nome: str, card_id: str = None, resumo: str = None
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
+    
+if __name__ == "__main__":
+    uvicorn.run(app=app)
