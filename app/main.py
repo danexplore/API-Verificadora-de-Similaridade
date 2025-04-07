@@ -174,6 +174,3 @@ async def buscar_similaridade(nome: str, card_id: str = None, resumo: str = None
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
-    
-if __name__ == "__main__":
-    uvicorn.run(app=app)
