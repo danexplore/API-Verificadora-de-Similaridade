@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 import requests
 import unicodedata
 import re
-import uvicorn
 
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
@@ -28,13 +27,11 @@ ELASTIC_URL_TOKEN = os.getenv("ELASTIC_URL_TOKEN")
 
 # Configuração do Elasticsearch (Elastic Cloud)
 ELASTICSEARCH_URL = f"https://daniel-elasticsearch.ekyhxs.easypanel.host"
-ENCODED_CREDENTIALS = os.getenv('encoded')
 
 # Inicializar cliente do Elasticsearch
 client = Elasticsearch(
     ELASTICSEARCH_URL,
-    api_key=ENCODED_CREDENTIALS,
-    basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD')),
+    basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD'))
 )
 
 
