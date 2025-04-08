@@ -54,89 +54,101 @@ async def buscar_similaridade(nome: str, card_id: str = None, resumo: str = None
         if not nome:
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
 
-        else:
-            nome_preparado = preparar_para_embedding(nome)
-            resumo_preparado = preparar_para_embedding(resumo) if resumo else None
-            nome_vector = model.encode(nome_preparado).tolist()
+        nome_preparado = preparar_para_embedding(nome)
+        nome_vector = model.encode(nome_preparado).tolist()
 
-            # Construir filtros dinamicamente
-            filters = []
-            if situacao:
-                filters.append({"term": {"situacao": situacao}})
-            if versao:
-                filters.append({"term": {"versao": versao}})
-            if coordenador:
-                filters.append({
-                    "match_phrase_prefix": {
-                        "coordenador": {
-                            "query": coordenador
-                        }
-                    }
-                })
+        resumo_preparado = preparar_para_embedding(resumo) if resumo else None
+        resumo_vector = model.encode(resumo_preparado).tolist() if resumo_preparado else None
 
-            # Montar blocos do should dinamicamente
-            should_clauses = [
-                {
-                    "knn": {
-                        "field": "nome_vector",
-                        "query_vector": nome_vector,
-                        "k": 15,
-                        "num_candidates": 100
-                    }
-                }
-            ]
+        # Filtros comuns para as duas buscas
+        filters = []
+        if situacao:
+            situacoes = [s.strip() for s in situacao.split(",")]
+            filters.append({"terms": {"situacao": situacoes}})
+        if versao:
+            versoes = [v.strip() for v in versao.split(",")]
+            filters.append({"terms": {"versao": versoes}})
+        if coordenador:
+            filters.append({"match_phrase_prefix": {"coordenador": {"query": coordenador}}})
 
-            # Se tiver resumo, adiciona KNN do resumo_vector
-            if resumo_preparado:
-                resumo_vector = model.encode(resumo_preparado).tolist()
-                should_clauses.append({
-                    "knn": {
-                        "field": "resumo_vector",
-                        "query_vector": resumo_vector,
-                        "k": 15,
-                        "num_candidates": 100
-                    }
-                })
-
-            # Montar a query final
-            query = {
-                "size": 15,
+        # Função para montar a query de KNN
+        def montar_query_knn(vector_field, vector):
+            return {
+                "size": 50,
                 "query": {
                     "bool": {
-                        "should": should_clauses,
                         "filter": filters,
-                        "minimum_should_match": 1  # garante que pelo menos 1 `should` case
+                        "must": {
+                            "knn": {
+                                "field": vector_field,
+                                "query_vector": vector,
+                                "k": 75,
+                                "num_candidates": 300
+                            }
+                        }
                     }
                 },
                 "_source": ["nome", "coordenador", "situacao", "versao"]
             }
 
+        # Executa busca por nome
+        query_nome = montar_query_knn("nome_vector", nome_vector)
+        res_nome = client.search(index="cursos_producao", body=query_nome)["hits"]["hits"]
 
+        # Executa busca por resumo, se houver
+        res_resumo = []
+        if resumo_vector:
+            query_resumo = montar_query_knn("resumo_vector", resumo_vector)
+            res_resumo = client.search(index="cursos_producao", body=query_resumo)["hits"]["hits"]
 
-        # Fazer a busca
-        response = client.search(index="cursos_producao", body=query)
-        resultados = response["hits"]["hits"]
+        # Indexar os scores
+        scores_nome = {r["_id"]: r["_score"] for r in res_nome}
+        scores_resumo = {r["_id"]: r["_score"] for r in res_resumo}
 
-        if not resultados:
-            return {"message": "Nenhum curso similar encontrado."}
+        # Mesclar e calcular score final
+        todos_ids = set(scores_nome.keys()).union(scores_resumo.keys())
+        peso_nome = 0.7
+        peso_resumo = 0.3
 
         # Processar resultados com limiar mínimo de similaridade (ex: 60%)
         cursos_similares = ["🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n"]
-        for curso in resultados:
-            score_percentual = round(((curso['_score'] + 1) / 2.0) * 85, 0)
-            if score_percentual < 60:
-                continue  # Ignora cursos com baixa similaridade
+        cursos_final = []
+        for _id in todos_ids:
+            score_nome = scores_nome.get(_id, 0)
+            score_resumo = scores_resumo.get(_id, 0)
+            score_final = (peso_nome * score_nome) + (peso_resumo * score_resumo)
+            if score_final < 0.71:
+                continue
 
-            cursos_similares.append(
-                f"📌 Curso Similar: {curso['_source']['nome']}\n"
-                f"📊 Similaridade: {score_percentual}%\n"
-                f"👨‍🏫 Coordenador: {curso['_source']['coordenador']}\n"
-                f"📌 Situação: {curso['_source']['situacao']}\n"
-                f"🆕 Versão: {curso['_source']['versao']}\n"
+            # Buscar o documento completo (de qualquer uma das buscas)
+            doc = next((r for r in res_nome + res_resumo if r["_id"] == _id), None)
+            if not doc:
+                continue
+
+            cursos_final.append({
+                "nome": doc["_source"]["nome"],
+                "coordenador": doc["_source"].get("coordenador"),
+                "situacao": doc["_source"].get("situacao"),
+                "versao": doc["_source"].get("versao"),
+                "score": round(score_final, 2) * 100,  # Normalizando para porcentagem
+                "score_nome": round(score_nome, 2) * 100,
+                "score_resumo": round(score_resumo, 2) * 100
+            })
+
+        # Ordenar por score final
+        cursos_final.sort(key=lambda x: x["score"], reverse=True)
+
+        for curso in cursos_final[:15]:
+            cursos_similares.append(    
+                f"📌 Curso Similar: {curso['nome']}\n"
+                f"📊 Similaridade: {curso['score']}%\n"
+                f"👨‍🏫 Coordenador: {curso['coordenador']}\n"
+                f"📌 Situação: {curso['situacao']}\n"
+                f"🆕 Versão: {curso['versao']}\n"
                 f"--------------------------------------------------\n"
             )
 
-        if len(cursos_similares) == 1:
+        if len(cursos_final) == 0:
             return {"message": "Nenhum curso similar relevante encontrado."}
 
         cursos_similares_str = "\n".join(cursos_similares)
