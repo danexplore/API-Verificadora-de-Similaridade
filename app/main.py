@@ -65,15 +65,27 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
     )
     for i, curso in enumerate(cursos, start=1):
         prompt += f"{i}. {curso['nome']}\n"
-
-    instrucoes = (
-        "Você é um especialista em análise educacional. Com base no nome e resumo (se tiver) do curso principal, "
-        "avalie semanticamente a similaridade com os cursos listados e lembre que as vezes o curso pode ter uma diferença por causa do enfoque, então análise isso também. Para cada curso, retorne:\n"
-        "- Uma nota de 1 a 5 estrelas (apenas número inteiro)\n"
-        "- Um comentário breve justificando a nota\n\n"
-        "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
-        '[{"nome": "Curso A", "estrelas": 4, "comentario": "Tem grande relação temática."}, ...]'
-    )
+    
+    if cursos == 1:
+        instrucoes = (
+            "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
+            "avalie semanticamente a similaridade com o curso listado. Considere que o curso pode ter diferenças de enfoque, "
+            "mas ainda assim pode ser relevante. Retorne:\n"
+            "- Uma nota de 1 a 5 estrelas (apenas número inteiro)\n"
+            "- Um comentário explicativo justificando a nota com um parágrafo\n\n"
+            "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
+            '{"nome": "Curso A", "estrelas": 4, "comentario": "Tem grande relação temática."}'
+        )
+    else:
+        instrucoes = (
+            "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
+            "avalie semanticamente a similaridade com o curso listado. Considere que o curso pode ter diferenças de enfoque, "
+            "mas ainda assim pode ser relevante. Retorne: \n"
+            "- Uma nota de 1 a 5 estrelas (apenas número inteiro)\n"
+            "- Um comentário breve justificando a nota\n\n"
+            "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
+            '[{"nome": "Curso A", "estrelas": 4, "comentario": "Tem grande relação temática."}, ...]'
+        )
 
     payload = {
         "model": "deepseek-chat",
@@ -88,7 +100,6 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         response = deepseek_session.post(DEEPSEEK_URL, json=payload)
         response.raise_for_status()
         conteudo = response.json()["choices"][0]["message"]["content"]
-        print("\n[DEBUG IA] Conteúdo bruto da IA:\n", conteudo)
 
         # 🔧 Corrigir conteúdo com marcação Markdown tipo ```json ... ```
         if conteudo.strip().startswith("```json"):
@@ -226,6 +237,10 @@ async def buscar_similaridade(nome: str, card_id: str = None, qtd_respostas: int
             else:
                 curso["estrelas"] = 0
                 curso["comentario"] = "Não avaliado pela IA."
+            
+            estrelas = ia_data["estrelas"]
+            if estrelas < 3:
+                continue  # Ignorar cursos com avaliação baixa
 
         # 🔀 Ordenar por estrelas (desc), depois por score
         cursos_final.sort(key=lambda x: (x.get("estrelas", 0), x["score"]), reverse=True)
@@ -289,9 +304,9 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
             raise HTTPException(status_code=400, detail="Nome do curso principal e do similar são obrigatórios.")
 
         # Preparar payload no mesmo formato usado na função de comparação múltipla
-        cursos = [{"nome": nome_similar}]
+        curso = [{"nome": nome_similar}]
 
-        avaliacoes = avaliar_relevancia_ia(nome_principal, resumo_principal, cursos)
+        avaliacoes = avaliar_relevancia_ia(nome_principal, resumo_principal, curso)
 
         if not avaliacoes:
             return {"message": "A IA não conseguiu gerar uma avaliação."}
