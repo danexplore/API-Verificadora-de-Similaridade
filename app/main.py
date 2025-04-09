@@ -53,19 +53,19 @@ model = SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 # Inicializar FastAPI
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 
-def avaliar_relevancia_ia(nome, resumo, cursos):
+def avaliar_relevancia_ia(nome, resumo, cursos, relevancia_bool):
     import re
 
     if resumo == "":
         resumo = "Resumo do curso não fornecido, continue a análise somente com o nome do curso."
 
     prompt = (
-        f"Curso principal:\nNome: {nome}\nResumo: {resumo}\n\n"
+        f"Curso principal:\n Nome: {nome}\nResumo: {resumo}\n\n"
         f"Cursos similares:\n"
     )
-    for i, curso in enumerate(cursos, start=1):
-        prompt += f"{i}. {curso['nome']}\n"
-    
+    for i, curso in enumerate(cursos, start=0):
+        prompt += f"id: {i}\nnome: {curso['nome']}\n"
+
     if cursos == 1:
         instrucoes = (
             "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
@@ -74,17 +74,25 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
             "- Uma nota de 1 a 5 estrelas (apenas número inteiro)\n"
             "- Um comentário explicativo justificando a nota com um parágrafo\n\n"
             "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
-            '{"nome": "Curso A", "estrelas": 4, "comentario": "Tem grande relação temática."}'
+            '{"id": "1", "estrelas": 4, "comentario": "Tem grande relação temática, porém o enfoque é diferente."}'
+        )
+    elif relevancia_bool:
+        instrucoes = (
+            "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
+            "avalie semanticamente a similaridade com o cursos listados. Considere que os cursos podem ter diferenças de enfoque, "
+            "mas ainda assim pode ser relevante. \n Com base nisso retorne uma"
+            " nota de 1 a 5 estrelas para o curso fornecido segundo sua relevancia (apenas número inteiro)\n"
+            "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional, retornando apenas o id do curso fornecido e o nome. Exemplo:\n"
+            '[{"id": "1", "estrelas": 4}, {"id": "2", "estrelas": 3} ...]'
         )
     else:
         instrucoes = (
             "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
-            "avalie semanticamente a similaridade com o curso listado. Considere que o curso pode ter diferenças de enfoque, "
-            "mas ainda assim pode ser relevante. Retorne: \n"
-            "- Uma nota de 1 a 5 estrelas (apenas número inteiro)\n"
-            "- Um comentário breve justificando a nota\n\n"
+            "avalie semanticamente a similaridade com os cursos listados. Considere que os cursos podem ter diferenças de enfoque, "
+            "mas ainda assim podem ser relevantes.\n Com base nisso faça "
+            "um comentário breve explicando a diferença.\n\n"
             "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
-            '[{"nome": "Curso A", "estrelas": 4, "comentario": "Tem grande relação temática."}, ...]'
+            '[{"id": "1", "comentario": "Tem grande relação temática, porém o enfoque é diferente."}, ...]'
         )
 
     payload = {
@@ -100,13 +108,19 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         response = deepseek_session.post(DEEPSEEK_URL, json=payload)
         response.raise_for_status()
         conteudo = response.json()["choices"][0]["message"]["content"]
+        print(conteudo)
 
         # 🔧 Corrigir conteúdo com marcação Markdown tipo ```json ... ```
         if conteudo.strip().startswith("```json"):
             conteudo = re.sub(r"^```json\s*|\s*```$", "", conteudo.strip(), flags=re.DOTALL)
 
+        # Validar se o conteúdo é um JSON válido
         try:
-            return json.loads(conteudo)
+            resultado = json.loads(conteudo)
+            if isinstance(resultado, list) or isinstance(resultado, dict):
+                return resultado
+            else:
+                raise ValueError("O retorno não é um JSON válido.", conteudo)
         except json.JSONDecodeError as e:
             print("[ERRO IA] Conteúdo não é JSON válido:", e)
             return []
@@ -222,25 +236,37 @@ async def buscar_similaridade(nome: str, card_id: str = None, qtd_respostas: int
 
         cursos_final = cursos_final[:qtd_respostas]
 
-        # 🔮 Aplicar IA para avaliação interpretativa
-        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final)
+        # 🔮 Aplicar IA para avaliação de relevÂncia
+        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final, True)
 
-        # Indexar por nome para facilitar merge
-        avaliacoes_dict = {item["nome"]: item for item in avaliacoes_ia}
+        avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
 
         # 🔁 Merge das informações da IA com os cursos
-        for curso in cursos_final:
-            ia_data = avaliacoes_dict.get(curso["nome"])
+        for i, curso in enumerate(cursos_final, start=0):
+            ia_data = avaliacoes_dict.get(str(i))
             if ia_data:
                 curso["estrelas"] = ia_data["estrelas"]
-                curso["comentario"] = ia_data["comentario"]
             else:
                 curso["estrelas"] = 0
                 curso["comentario"] = "Não avaliado pela IA."
             
-            estrelas = ia_data["estrelas"]
-            if estrelas < 3:
-                continue  # Ignorar cursos com avaliação baixa
+            if ia_data:
+                estrelas = ia_data["estrelas"]
+                if estrelas < 3:
+                    continue  # Ignorar cursos com avaliação baixa
+            else:
+                estrelas = 0
+        
+        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final, False)
+        avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
+        # 🔁 Merge das informações da IA com os curso
+        for i ,curso in enumerate(cursos_final, start=0):
+            ia_data = avaliacoes_dict.get(str(i))
+            if ia_data:
+                curso["comentario"] = ia_data["comentario"]
+            else:
+                curso["comentario"] = "Não avaliado pela IA."
+
 
         # 🔀 Ordenar por estrelas (desc), depois por score
         cursos_final.sort(key=lambda x: (x.get("estrelas", 0), x["score"]), reverse=True)
@@ -322,3 +348,6 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
+    
+import uvicorn
+uvicorn.run(app)
