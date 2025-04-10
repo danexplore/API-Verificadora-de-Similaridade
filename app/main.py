@@ -138,7 +138,7 @@ def processar_ia(nome, resumo, cursos_final):
         avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
 
         # Delete cursos with less than 3 stars:
-        avaliacoes_dict = {k: v for k, v in avaliacoes_dict.items() if v["estrelas"] >= 3}
+        avaliacoes_dict = {k: v for k, v in avaliacoes_dict.items() if int(v["estrelas"]) >= 3}
 
         # Merge das informações da IA com os cursos
         for i, curso in enumerate(cursos_final, start=0):
