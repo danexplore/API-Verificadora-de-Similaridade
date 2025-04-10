@@ -101,13 +101,10 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         response = deepseek_session.post(DEEPSEEK_URL, json=payload)
         response.raise_for_status()
         conteudo = response.json()["choices"][0]["message"]["content"]
-        print(conteudo)
 
         # 🔧 Corrigir conteúdo com marcação Markdown tipo ```json ... ```
         if conteudo.strip().startswith("```json"):
             conteudo = re.sub(r"^```json\s*|\s*```$", "", conteudo.strip(), flags=re.DOTALL)
-
-        print(conteudo)
 
         # Validar se o conteúdo é um JSON válido
         try:
@@ -386,14 +383,17 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
         if not avaliacoes:
             return {"message": "A IA não conseguiu gerar uma avaliação."}
 
-        avaliacao = avaliacoes[0]
+        avaliacao = avaliacoes
 
         return {
-            "nome_similar": avaliacao["nome"],
-            "estrelas": avaliacao["estrelas"],
+            "nome_similar": nome_similar,
+            "estrelas": int(avaliacao["estrelas"]),
             "comentario": avaliacao["comentario"],
-            "avaliacao_visual": "⭐" * avaliacao["estrelas"]
+            "avaliacao_visual": "⭐" * int(avaliacao["estrelas"])
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
+
+import uvicorn
+uvicorn.run(app)
