@@ -215,8 +215,7 @@ async def buscar_similaridade(
     versao: str = None,
     coordenador: str = None,
     background_tasks: BackgroundTasks = None,
-    usar_ia: bool = True,
-    atualizar_card: bool = True
+    usar_ia: bool = True
 ):
     """
     Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
@@ -351,7 +350,7 @@ async def buscar_similaridade(
                 for curso in cursos_final
             )
         
-        if atualizar_card:
+        if card_id:
             response = background_tasks.add_task(
                 atualizar_pipefy,
                 card_id,
@@ -394,6 +393,3 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
-
-import uvicorn
-uvicorn.run(app)
