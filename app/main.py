@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
@@ -7,7 +7,6 @@ import requests
 import unicodedata
 import re
 import json
-
 
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
@@ -53,7 +52,7 @@ model = SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 # Inicializar FastAPI
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 
-def avaliar_relevancia_ia(nome, resumo, cursos, relevancia_bool):
+def avaliar_relevancia_ia(nome, resumo, cursos):
     import re
 
     if resumo == "":
@@ -66,7 +65,7 @@ def avaliar_relevancia_ia(nome, resumo, cursos, relevancia_bool):
     for i, curso in enumerate(cursos, start=0):
         prompt += f"id: {i}\nnome: {curso['nome']}\n"
 
-    if cursos == 1:
+    if len(cursos) == 1:
         instrucoes = (
             "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
             "avalie semanticamente a similaridade com o curso listado. Considere que o curso pode ter diferenças de enfoque, "
@@ -76,23 +75,17 @@ def avaliar_relevancia_ia(nome, resumo, cursos, relevancia_bool):
             "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
             '{"id": "1", "estrelas": 4, "comentario": "Tem grande relação temática, porém o enfoque é diferente."}'
         )
-    elif relevancia_bool:
-        instrucoes = (
-            "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
-            "avalie semanticamente a similaridade com o cursos listados. Considere que os cursos podem ter diferenças de enfoque, "
-            "mas ainda assim pode ser relevante. \n Com base nisso retorne uma"
-            " nota de 1 a 5 estrelas para o curso fornecido segundo sua relevancia (apenas número inteiro)\n"
-            "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional, retornando apenas o id do curso fornecido e o nome. Exemplo:\n"
-            '[{"id": "1", "estrelas": 4}, {"id": "2", "estrelas": 3} ...]'
-        )
     else:
         instrucoes = (
             "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
             "avalie semanticamente a similaridade com os cursos listados. Considere que os cursos podem ter diferenças de enfoque, "
-            "mas ainda assim podem ser relevantes.\n Com base nisso faça "
-            "um comentário breve explicando a diferença.\n\n"
+            "mas ainda assim podem ser relevantes.\n Com base nisso retorne:\n"
+            "-- Uma nota de 1 a 5 estrelas para o curso fornecido segundo sua relevancia (apenas número inteiro)\n"
+            "-- Um comentário breve explicando a diferença.\n\n"
+            "IMPORTANTE: Não gere comentarios para cursos abaixo de 3 estrelas, deixe em branco como no exemplo a seguir.\n"
             "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
-            '[{"id": "1", "comentario": "Tem grande relação temática, porém o enfoque é diferente."}, ...]'
+            '[{"id": "1", "estrelas": "4", "comentario": "Tem grande relação temática, porém o enfoque é diferente."},'
+            '{"id": "2", "estrelas": "1", "comentario": ""}, ...]'
         )
 
     payload = {
@@ -114,9 +107,12 @@ def avaliar_relevancia_ia(nome, resumo, cursos, relevancia_bool):
         if conteudo.strip().startswith("```json"):
             conteudo = re.sub(r"^```json\s*|\s*```$", "", conteudo.strip(), flags=re.DOTALL)
 
+        print(conteudo)
+
         # Validar se o conteúdo é um JSON válido
         try:
             resultado = json.loads(conteudo)
+            print(resultado)
             if isinstance(resultado, list) or isinstance(resultado, dict):
                 return resultado
             else:
@@ -134,8 +130,97 @@ def avaliar_relevancia_ia(nome, resumo, cursos, relevancia_bool):
 async def home():
     return {"message": "API de Similaridade de Cursos Online!"}
 
+# Função para rodar a chamada à IA e atualizar o Pipefy em background
+def processar_ia(nome, resumo, cursos_final):
+    try:
+        # Avaliar relevância com IA
+        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final)
+        avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
+
+        # Delete cursos with less than 3 stars:
+        avaliacoes_dict = {k: v for k, v in avaliacoes_dict.items() if v["estrelas"] >= 3}
+
+        # Merge das informações da IA com os cursos
+        for i, curso in enumerate(cursos_final, start=0):
+            ia_data = avaliacoes_dict.get(str(i))
+            if ia_data:
+                curso["estrelas"] = int(ia_data["estrelas"])
+                curso["comentario"] = ia_data["comentario"]
+            else:
+                curso["estrelas"] = 1
+                curso["comentario"] = "Não avaliado pela IA."
+
+        # Ordenar por estrelas (desc), depois por score
+        cursos_final.sort(key=lambda x: (x.get("estrelas", 0), x["score"]), reverse=True)
+ 
+        # Gerar string de cursos similares
+        cursos_similares = ["🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n"]
+        for curso in cursos_final:
+            cursos_similares.append(
+                f"📌 Curso Similar: {curso['nome']}\n"
+                f"📊 Similaridade: {curso['score']}%\n"
+                f"👨‍🏫 Coordenador: {curso['coordenador']}\n"
+                f"📌 Situação: {curso['situacao']}\n"
+                f"🆕 Versão: {curso['versao']}\n"
+                f"🌟 Avaliação IA: {'⭐' * curso['estrelas']}\n"
+                f"🧠 Comentário: {curso['comentario']}\n"
+                f"--------------------------------------------------\n"
+            )
+        cursos_similares_str = "\n".join(cursos_similares)
+
+        return cursos_similares_str
+    
+    except Exception as e:
+        print(f"[ERRO] Erro ao processar IA ou atualizar Pipefy: {str(e)}")
+        return {"message": "Erro ao processar: " + str(e)}
+
+def atualizar_pipefy(card_id, cursos_similares_str):
+    try:
+        # Atualizar no Pipefy
+        mutation = """
+        mutation {
+            updateCardField(input: {
+                card_id: "%s",
+                field_id: "cursos_similares",
+                new_value: "%s"
+            }) {
+                card { id }
+            }
+        }
+        """ % (card_id, cursos_similares_str)
+
+        headers = {
+            "Authorization": f"Bearer {PIPEFY_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        pipefy_response = requests.post(PIPEFY_API_URL, json={"query": mutation}, headers=headers)
+
+        if pipefy_response.status_code != 200:
+            print("[ERRO] Falha ao atualizar o campo do cartão no Pipefy.")
+            return "error"
+        else:
+            print("[SUCESSO] Campo do cartão atualizado no Pipefy.")
+        
+        return "success"
+    except Exception as e:
+        print(f"[ERRO] Erro ao atualizar Pipefy: {str(e)}")
+        return "error"
+
+
 @app.get("/buscar/")
-async def buscar_similaridade(nome: str, card_id: str = None, qtd_respostas: int = 7, resumo: str = None, situacao: str = None, versao: str = None, coordenador: str = None):
+async def buscar_similaridade(
+    nome: str,
+    card_id: str = None,
+    qtd_respostas: int = 7,
+    resumo: str = None,
+    situacao: str = None,
+    versao: str = None,
+    coordenador: str = None,
+    background_tasks: BackgroundTasks = None,
+    usar_ia: bool = True,
+    atualizar_card: bool = True
+):
     """
     Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
     """
@@ -161,24 +246,44 @@ async def buscar_similaridade(nome: str, card_id: str = None, qtd_respostas: int
             filters.append({"match_phrase_prefix": {"coordenador": {"query": coordenador}}})
 
         # Função para montar a query de KNN
-        def montar_query_knn(vector_field, vector):
-            return {
-                "size": 50,
-                "query": {
-                    "bool": {
-                        "filter": filters,
-                        "must": {
-                            "knn": {
-                                "field": vector_field,
-                                "query_vector": vector,
-                                "k": 100,
-                                "num_candidates": 350
+        if usar_ia:
+            def montar_query_knn(vector_field, vector):
+                return {
+                    "size": 25,
+                    "query": {
+                        "bool": {
+                            "filter": filters,
+                            "must": {
+                                "knn": {
+                                    "field": vector_field,
+                                    "query_vector": vector,
+                                    "k": 75,
+                                    "num_candidates": 250
+                                }
                             }
                         }
-                    }
-                },
-                "_source": ["nome", "coordenador", "situacao", "versao"]
-            }
+                    },
+                    "_source": ["nome", "coordenador", "situacao", "versao"]
+                }
+        else:
+            def montar_query_knn(vector_field, vector):
+                return {
+                    "size": 50,
+                    "query": {
+                        "bool": {
+                            "filter": filters,
+                            "must": {
+                                "knn": {
+                                    "field": vector_field,
+                                    "query_vector": vector,
+                                    "k": 150,
+                                    "num_candidates": 300
+                                }
+                            }
+                        }
+                    },
+                    "_source": ["nome", "coordenador", "situacao", "versao"]
+                }
 
         # Executa busca por nome
         query_nome = montar_query_knn("nome_vector", nome_vector)
@@ -199,8 +304,6 @@ async def buscar_similaridade(nome: str, card_id: str = None, qtd_respostas: int
         peso_nome = 0.7
         peso_resumo = 0.3
 
-        # Processar resultados com limiar mínimo de similaridade (ex: 60%)
-        cursos_similares = ["🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n"]
         cursos_final = []
         for _id in todos_ids:
             score_nome = scores_nome.get(_id, 0)
@@ -231,90 +334,36 @@ async def buscar_similaridade(nome: str, card_id: str = None, qtd_respostas: int
                 curso["score_resumo"] = 0
             cursos_final.append(curso)
 
-        # ordenar por elasticsearch
+        # Ordenar por Elasticsearch
         cursos_final.sort(key=lambda x: x["score"], reverse=True)
 
         cursos_final = cursos_final[:qtd_respostas]
 
-        # 🔮 Aplicar IA para avaliação de relevÂncia
-        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final, True)
-
-        avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
-
-        # 🔁 Merge das informações da IA com os cursos
-        for i, curso in enumerate(cursos_final, start=0):
-            ia_data = avaliacoes_dict.get(str(i))
-            if ia_data:
-                curso["estrelas"] = ia_data["estrelas"]
-            else:
-                curso["estrelas"] = 0
-                curso["comentario"] = "Não avaliado pela IA."
-            
-            if ia_data:
-                estrelas = ia_data["estrelas"]
-                if estrelas < 3:
-                    continue  # Ignorar cursos com avaliação baixa
-            else:
-                estrelas = 0
-        
-        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final, False)
-        avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
-        # 🔁 Merge das informações da IA com os curso
-        for i ,curso in enumerate(cursos_final, start=0):
-            ia_data = avaliacoes_dict.get(str(i))
-            if ia_data:
-                curso["comentario"] = ia_data["comentario"]
-            else:
-                curso["comentario"] = "Não avaliado pela IA."
-
-
-        # 🔀 Ordenar por estrelas (desc), depois por score
-        cursos_final.sort(key=lambda x: (x.get("estrelas", 0), x["score"]), reverse=True)
-
-        for curso in cursos_final:
-            cursos_similares.append(    
+        if usar_ia:
+            # Processar IA em background
+            cursos_similares_str = processar_ia(nome, resumo, cursos_final)
+        else:
+            cursos_similares_str = "🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n" \
+            "\n".join(
                 f"📌 Curso Similar: {curso['nome']}\n"
                 f"📊 Similaridade: {curso['score']}%\n"
                 f"👨‍🏫 Coordenador: {curso['coordenador']}\n"
                 f"📌 Situação: {curso['situacao']}\n"
                 f"🆕 Versão: {curso['versao']}\n"
-                f"🌟 Avaliação IA: {'⭐' * curso['estrelas']}\n"
-                f"🧠 Comentário: {curso['comentario']}\n"
                 f"--------------------------------------------------\n"
+                for curso in cursos_final
             )
-
-        if len(cursos_final) == 0:
-            return {"message": "Nenhum curso similar relevante encontrado."}
         
-        cursos_similares_str = "\n".join(cursos_similares)
+        if atualizar_card:
+            response = background_tasks.add_task(
+                atualizar_pipefy,
+                card_id,
+                cursos_similares_str
+            )
+            if response == "error":
+                return {"message": "Erro ao atualizar o campo do cartão no Pipefy.", "cursos_similares": cursos_similares_str}
+        return {"message": "Campo do cartão atualizado com sucesso.", "cursos_similares": cursos_similares_str}
 
-        # Atualizar no Pipefy ou retornar
-        if card_id is None:
-            return {"message": cursos_similares}
-        else:
-            mutation = """
-            mutation {
-                updateCardField(input: {
-                    card_id: "%s",
-                    field_id: "cursos_similares",
-                    new_value: "%s"
-                }) {
-                    card { id }
-                }
-            }
-            """ % (card_id, cursos_similares_str)
-
-            headers = {
-                "Authorization": f"Bearer {PIPEFY_API_TOKEN}",
-                "Content-Type": "application/json"
-            }
-
-            pipefy_response = requests.post(PIPEFY_API_URL, json={"query": mutation}, headers=headers)
-
-            if pipefy_response.status_code != 200:
-                raise HTTPException(status_code=500, detail="Erro ao atualizar o campo do cartão no Pipefy.")
-
-            return {"message": "Campo do cartão atualizado com sucesso.", "cursos_similares": cursos_similares_str}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
@@ -348,6 +397,3 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
-    
-import uvicorn
-uvicorn.run(app)
