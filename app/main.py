@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
+from openai import OpenAI
 from dotenv import load_dotenv
 import requests
 import unicodedata
@@ -52,9 +53,12 @@ model = SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 # Inicializar FastAPI
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 
+# Instanciar o client atualizado para usar o gpt-4.1-nano
+openai_api_key = os.getenv("OPENAI_API_KEY")
+client_openai = OpenAI(api_key=openai_api_key)
+
 def avaliar_relevancia_ia(nome, resumo, cursos):
     import re
-
     if resumo == "":
         resumo = "Resumo do curso não fornecido, continue a análise somente com o nome do curso."
 
@@ -80,7 +84,7 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
             "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
             "avalie semanticamente a similaridade com os cursos listados. Considere que os cursos podem ter diferenças de enfoque, "
             "mas ainda assim podem ser relevantes.\n Com base nisso retorne:\n"
-            "-- Uma nota de 1 a 5 estrelas para o curso fornecido segundo sua relevancia (apenas número inteiro)\n"
+            "-- Uma nota de 1 a 5 estrelas para o curso fornecido segundo sua relevância (apenas número inteiro)\n"
             "-- Um comentário breve explicando a diferença.\n\n"
             "IMPORTANTE: Não gere comentarios para cursos abaixo de 3 estrelas, deixe em branco como no exemplo a seguir.\n"
             "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
@@ -89,20 +93,47 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         )
 
     payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": instrucoes},
-            {"role": "user", "content": prompt}
+        "model": "gpt-4.1-nano",
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "input_text", "text": instrucoes}
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt}
+                ]
+            }
         ],
-        "stream": False
+        "text": {
+            "format": {"type": "text"}
+        },
+        "reasoning": {},
+        "tools": [],
+        "temperature": 1,
+        "max_output_tokens": 4491,
+        "top_p": 1,
+        "store": True
     }
 
     try:
-        response = deepseek_session.post(DEEPSEEK_URL, json=payload)
-        response.raise_for_status()
-        conteudo = response.json()["choices"][0]["message"]["content"]
+        response = client_openai.responses.create(**payload)
 
-        # 🔧 Corrigir conteúdo com marcação Markdown tipo ```json ... ```
+        # Obter o conteúdo usando iteração para evitar indexação direta
+        output_iter = iter(response.output)
+        first_output = next(output_iter, None)
+        if first_output is None:
+            raise ValueError("Nenhuma saída recebida da IA.")
+        content_iter = iter(first_output.content)
+        first_content = next(content_iter, None)
+        if first_content is None:
+            raise ValueError("Nenhum conteúdo na resposta da IA.")
+        conteudo = first_content.text
+
+        # Remover marcação Markdown se presente
         if conteudo.strip().startswith("```json"):
             conteudo = re.sub(r"^```json\s*|\s*```$", "", conteudo.strip(), flags=re.DOTALL)
 
@@ -117,7 +148,6 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         except json.JSONDecodeError as e:
             print("[ERRO IA] Conteúdo não é JSON válido:", e)
             return []
-
     except Exception as e:
         print(f"[ERRO IA] {e}")
         return []
