@@ -222,7 +222,7 @@ async def atualizar_pipefy(card_id, cursos_similares_str):
         print(f"[ERRO] Erro ao atualizar Pipefy: {str(e)}")
         return "error"
 
-@app.get("/buscar/")
+@app.get("/buscar")
 async def buscar_similaridade(
     nome: str,
     card_id: str = None,
