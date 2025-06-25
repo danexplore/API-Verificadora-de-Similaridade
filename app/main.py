@@ -14,7 +14,30 @@ import re
 import json
 from upstash_redis import Redis
 
-redis = Redis.from_env()
+if os.getenv("ENVIRONMENT") == "development":
+    load_dotenv()
+
+async def lifespan(app: FastAPI):
+    REDIS_URL = os.getenv("REDIS_URL")
+    if not REDIS_URL:
+        raise ValueError("REDIS_URL não está definida nas variáveis de ambiente")
+    
+    # Configuração do Redis
+    redis = Redis.from_env()
+    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+
+app = FastAPI(lifespan=lifespan, title="API de Similaridade de Cursos", version="1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permitir todas as origens
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+async def root():
+    return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
@@ -33,17 +56,6 @@ PIPEFY_API_URL = "https://api.pipefy.com/graphql"
 PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_TOKEN')
 
 ELASTIC_URL_TOKEN = os.getenv("ELASTIC_URL_TOKEN")
-
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"  # substitua se for outro
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # salve no seu .env
-
-# Criar sessão para requests do DeepSeek
-deepseek_session = requests.Session()
-deepseek_session.headers.update({
-    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-    "Content-Type": "application/json"
-})
-
 # Configuração do Elasticsearch (Elastic Cloud)
 ELASTICSEARCH_URL = f"https://daniel-elasticsearch.ekyhxs.easypanel.host"
 
@@ -53,18 +65,19 @@ client = Elasticsearch(
     basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD'))
 )
 
-
 # Inicializar modelo de embeddings
 model = SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 
 # Inicializar FastAPI
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 
-# Instanciar o client atualizado para usar o gpt-4.1-nano
-openai_api_key = os.getenv("OPENAI_API_KEY")
-client_openai = OpenAI(api_key=openai_api_key)
-
+@cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
 def avaliar_relevancia_ia(nome, resumo, cursos):
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise ValueError("A variável de ambiente OPENAI_API_KEY não está definida.")
+    client_openai = OpenAI(api_key=openai_api_key)
+
     import re
     if resumo == "":
         resumo = "Resumo do curso não fornecido, continue a análise somente com o nome do curso."
@@ -98,14 +111,14 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
             "Se forem muito similares, destaque as diferenças práticas e teóricas que justificariam a oferta de ambos, ou se um curso pode sobrepor o outro.\n"
             "- Se um curso receber menos de 3 estrelas, o campo de comentário deve permanecer vazio.\n\n"
             "# Output Format\n\n"
-            "A saída deve estar no formato JSON sem texto adicional fora desse formato.\n\n"
+            "A saída deve estar no formato de lista JSON sem texto adicional fora desse formato.\n\n"
             "# Examples\n\n"
             "## Example Input:\n\n"
             "- Curso principal: [Nome e resumo do curso principal]\n"
             "- Cursos listados: \n"
             "  1. Curso A: [Nome e resumo do curso A]\n"
             "  2. Curso B: [Nome e resumo do curso B]\n\n"
-            "## Exemplo de Saída:\n\n"
+            "## Exemplo de Saída :\n\n"
             "[\n"
             "  {\"id\": \"1\", \"estrelas\": \"4\", \"comentario\": \"Embora ambos abordem o mesmo tema, este curso se concentra em aplicações práticas, enquanto o curso principal é mais teórico.\"},\n"
             "  {\"id\": \"2\", \"estrelas\": \"3\", \"comentario\": \"Os cursos possuem similaridade temática, mas este foca mais em uma abordagem diferente de ensino.\"},\n"
@@ -118,7 +131,7 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         )
 
     payload = {
-        "model": "gpt-4o-mini",
+        "model": "gpt-4.1",
         "input": [
             {
                 "role": "system",
@@ -136,31 +149,20 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         "text": {
             "format": {"type": "text"}
         },
-        "reasoning": {},
-        "tools": [],
         "temperature": 0.5,
-        "max_output_tokens": 4000,
+        "max_output_tokens": 5000,
         "top_p": 0.76,
         "store": True
     }
     print(prompt)
     try:
-        response = client_openai.responses.create(**payload)
+        response = client_openai.chat.completions.create(**payload)
 
-        # Obter o conteúdo usando iteração para evitar indexação direta
-        output_iter = iter(response.output)
-        first_output = next(output_iter, None)
-        if first_output is None:
-            raise ValueError("Nenhuma saída recebida da IA.")
-        content_iter = iter(first_output.content)
-        first_content = next(content_iter, None)
-        if first_content is None:
-            raise ValueError("Nenhum conteúdo na resposta da IA.")
-        conteudo = first_content.text
-
+        resposta_ia_str = response.choices[0].message.content
+        if not resposta_ia_str:
+            raise ValueError("Resposta da IA está vazia.")
         # Remover marcação Markdown se presente
-        if conteudo.strip().startswith("```json"):
-            conteudo = re.sub(r"^```json\s*|\s*```$", "", conteudo.strip(), flags=re.DOTALL)
+        conteudo = json.loads(resposta_ia_str)
 
         # Validar se o conteúdo é um JSON válido
         try:
@@ -177,12 +179,8 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         print(f"[ERRO IA] {e}")
         return []
 
-
-@app.get("/")
-async def home():
-    return {"message": "API de Similaridade de Cursos Online!"}
-
 # Função para rodar a chamada à IA e atualizar o Pipefy em background
+@cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
 def processar_ia(nome, resumo, cursos_final):
     try:
         # Avaliar relevância com IA
@@ -201,6 +199,9 @@ def processar_ia(nome, resumo, cursos_final):
             else:
                 curso["estrelas"] = 1
                 curso["comentario"] = "Não avaliado pela IA."
+
+        # Delete cursos with menos de 3 estrelas:
+        cursos_final = {k: v for k, v in cursos_final.items() if int(v["estrelas"]) >= 3}
 
         # Ordenar por estrelas (desc), depois por score
         cursos_final.sort(key=lambda x: (x.get("estrelas", 0), x["score"]), reverse=True)
@@ -261,10 +262,11 @@ def atualizar_pipefy(card_id, cursos_similares_str):
 
 
 @app.get("/buscar/")
+@cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
 async def buscar_similaridade(
     nome: str,
     card_id: str = None,
-    qtd_respostas: int = 7,
+    qtd_respostas: int = 50,
     resumo: str = None,
     situacao: str = None,
     versao: str = None,
@@ -274,6 +276,20 @@ async def buscar_similaridade(
 ):
     """
     Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
+
+    Args:
+        nome (str): Nome do curso a ser buscado.
+        card_id (str, optional): ID do cartão no Pipefy para atualizar com os resultados. Default é None.
+        qtd_respostas (int, optional): Quantidade de respostas a serem retornadas. Default é 50.
+        resumo (str, optional): Resumo do curso a ser buscado. Default é None.
+        situacao (str, optional): Situação do curso para filtro. Default é None.
+        versao (str, optional): Versão do curso para filtro. Default é None.
+        coordenador (str, optional): Coordenador do curso para filtro. Default é None.
+        background_tasks (BackgroundTasks, optional): Tarefas em segundo plano para atualizar Pipefy. Default é None.
+        usar_ia (bool, optional): Se True, processa IA para avaliar relevância dos cursos encontrados. Default é True.
+    
+    Returns:
+        dict: Dicionário com os cursos similares encontrados e suas informações, e caso possua o card_id vai atualizar o campo no Pipefy com os resultados.
     """
     try:
         if not nome:
@@ -300,7 +316,7 @@ async def buscar_similaridade(
         if usar_ia:
             def montar_query_knn(vector_field, vector):
                 return {
-                    "size": 25,
+                    "size": 50,
                     "query": {
                         "bool": {
                             "filter": filters,
@@ -308,8 +324,8 @@ async def buscar_similaridade(
                                 "knn": {
                                     "field": vector_field,
                                     "query_vector": vector,
-                                    "k": 75,
-                                    "num_candidates": 250
+                                    "k": 150,
+                                    "num_candidates": 300
                                 }
                             }
                         }
@@ -420,6 +436,7 @@ async def buscar_similaridade(
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
     
 @app.get("/comparar-curso")
+@cache_fastapi(expire=60*5)  # Cache por 5 minutos
 async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_principal: str = ""):
     """
     Compara semanticamente um curso principal com um único curso similar.
