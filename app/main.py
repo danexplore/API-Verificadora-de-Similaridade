@@ -1,4 +1,8 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from fastapi_cache.decorator import cache as cache_fastapi
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
@@ -8,6 +12,9 @@ import requests
 import unicodedata
 import re
 import json
+from upstash_redis import Redis
+
+redis = Redis.from_env()
 
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
@@ -81,19 +88,37 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         )
     else:
         instrucoes = (
-            "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
-            "avalie semanticamente a similaridade com os cursos listados. Considere que os cursos podem ter diferenças de enfoque, "
-            "mas ainda assim podem ser relevantes.\n Com base nisso retorne:\n"
-            "-- Uma nota de 1 a 5 estrelas para o curso fornecido segundo sua relevância (apenas número inteiro)\n"
-            "-- Um comentário breve explicando a diferença.\n\n"
-            "IMPORTANTE: Não gere comentarios para cursos abaixo de 3 estrelas, deixe em branco como no exemplo a seguir.\n"
-            "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
-            '[{"id": "1", "estrelas": "4", "comentario": "Tem grande relação temática, porém o enfoque é diferente."},'
-            '{"id": "2", "estrelas": "1", "comentario": ""}, ...]'
+            "Avalie a relevância de cursos em relação a um curso principal com base em diferenças e semelhanças.\n\n"
+            "Foque nas diferenças práticas e teóricas entre os cursos listados e o curso principal, mesmo em casos de semelhança. "
+            "Avalie com uma nota de 1 a 5 estrelas, onde apenas números inteiros são usados.\n\n"
+            "# Instruções\n\n"
+            "- Para cada curso listado, avalie a relevância em relação ao curso principal usando uma nota de 1 a 5 estrelas. "
+            "Use apenas números inteiros.\n"
+            "- Ao fornecer um comentário, foque em como os cursos se diferenciam um do outro, além de suas semelhanças. "
+            "Se forem muito similares, destaque as diferenças práticas e teóricas que justificariam a oferta de ambos, ou se um curso pode sobrepor o outro.\n"
+            "- Se um curso receber menos de 3 estrelas, o campo de comentário deve permanecer vazio.\n\n"
+            "# Output Format\n\n"
+            "A saída deve estar no formato JSON sem texto adicional fora desse formato.\n\n"
+            "# Examples\n\n"
+            "## Example Input:\n\n"
+            "- Curso principal: [Nome e resumo do curso principal]\n"
+            "- Cursos listados: \n"
+            "  1. Curso A: [Nome e resumo do curso A]\n"
+            "  2. Curso B: [Nome e resumo do curso B]\n\n"
+            "## Exemplo de Saída:\n\n"
+            "[\n"
+            "  {\"id\": \"1\", \"estrelas\": \"4\", \"comentario\": \"Embora ambos abordem o mesmo tema, este curso se concentra em aplicações práticas, enquanto o curso principal é mais teórico.\"},\n"
+            "  {\"id\": \"2\", \"estrelas\": \"3\", \"comentario\": \"Os cursos possuem similaridade temática, mas este foca mais em uma abordagem diferente de ensino.\"},\n"
+            "  {\"id\": \"3\", \"estrelas\": \"2\", \"comentario\": \"\"}\n"
+            "]\n\n"
+            "# Notas\n\n"
+            "- Avalie como os cursos podem ser diferentes um do outro e justifique esses pontos.\n"
+            "- Mantenha os comentários claros e específicos, indicando diferenças práticas, abordagens, ou focos de estudo.\n"
+            "- Utilize a escala de estrelas para ajudar a distinguir cursos que podem parecer similares, mas têm diferenças significativas a serem consideradas."
         )
 
     payload = {
-        "model": "gpt-4.1-nano",
+        "model": "gpt-4o-mini",
         "input": [
             {
                 "role": "system",
@@ -113,12 +138,12 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
         },
         "reasoning": {},
         "tools": [],
-        "temperature": 1,
-        "max_output_tokens": 4491,
-        "top_p": 1,
+        "temperature": 0.5,
+        "max_output_tokens": 4000,
+        "top_p": 0.76,
         "store": True
     }
-
+    print(prompt)
     try:
         response = client_openai.responses.create(**payload)
 

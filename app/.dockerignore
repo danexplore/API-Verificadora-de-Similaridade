@@ -16,3 +16,4 @@ models/
 *.docx
 *.zip
 *.tar
+*.tar.gz
