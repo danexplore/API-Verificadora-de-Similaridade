@@ -408,6 +408,10 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
     Compara semanticamente um curso principal com um único curso similar.
     Retorna avaliação por estrelas e comentário explicativo da IA.
     """
+    redis_key = f"comparar_cursos_unicos:{nome_principal}:{nome_similar}:{resumo_principal}"
+    cached_data = redis.get(redis_key)
+    if cached_data:
+        return json.loads(cached_data)
     try:
         if not nome_principal or not nome_similar:
             raise HTTPException(status_code=400, detail="Nome do curso principal e do similar são obrigatórios.")
@@ -422,12 +426,14 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
         avaliacao = avaliacoes
 
-        return {
+        curso_similar = {
             "nome_similar": nome_similar,
             "estrelas": int(avaliacao["estrelas"]),
             "comentario": avaliacao["comentario"],
             "avaliacao_visual": "⭐" * int(avaliacao["estrelas"])
         }
+        redis.setex(redis_key, 600, json.dumps(curso_similar))
+        return json.dumps(curso_similar)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
