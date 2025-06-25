@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from fastapi_cache.decorator import cache as cache_fastapi
+from fastapi_cache import FastAPICache
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
@@ -12,15 +12,31 @@ import requests
 import unicodedata
 import re
 import json
-from upstash_redis import Redis
+from redis import asyncio as aioredis
 from functools import lru_cache
+from starlette.requests import Request
+from starlette.responses import Response
+
+def request_key_builder(func, namespace: str = "", *, request: Request = None, response: Response = None, **kwargs):
+    return ":".join([
+        namespace,
+        request.method.lower(),
+        request.url.path,
+        repr(sorted(request.query_params.items()))
+    ])
 
 if os.getenv("ENVIRONMENT") == "development":
     load_dotenv()
 
 async def lifespan(app: FastAPI):
-    redis = Redis.from_env()
-    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+    redis_url = os.getenv("REDIS_URL")
+    redis = aioredis.from_url(redis_url, decode_responses=True)
+    try:
+        await redis.ping()
+    except Exception as e:
+        raise RuntimeError(f"Redis connection failed: {e}")
+    
+    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache", key_builder=request_key_builder)
     yield
 
 app = FastAPI(title="API de Similaridade de Cursos", version="1.0", lifespan=lifespan)
@@ -63,14 +79,12 @@ async def root():
 def get_model():
     return SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 
-@cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
-def avaliar_relevancia_ia(nome, resumo, cursos):
+async def avaliar_relevancia_ia(nome, resumo, cursos):
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         raise ValueError("A variável de ambiente OPENAI_API_KEY não está definida.")
     client_openai = OpenAI(api_key=openai_api_key)
 
-    import re
     if resumo == "":
         resumo = "Resumo do curso não fornecido, continue a análise somente com o nome do curso."
 
@@ -124,59 +138,39 @@ def avaliar_relevancia_ia(nome, resumo, cursos):
 
     payload = {
         "model": "gpt-4.1",
-        "input": [
+        "messages": [
             {
                 "role": "system",
-                "content": [
-                    {"type": "input_text", "text": instrucoes}
-                ]
+                "content": instrucoes
             },
             {
                 "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt}
-                ]
+                "content": prompt
             }
         ],
-        "text": {
-            "format": {"type": "text"}
-        },
-        "temperature": 0.5,
-        "max_output_tokens": 5000,
-        "top_p": 0.76,
-        "store": True
+        "temperature": 0.5
     }
-    print(prompt)
     try:
         response = client_openai.chat.completions.create(**payload)
 
         resposta_ia_str = response.choices[0].message.content
         if not resposta_ia_str:
             raise ValueError("Resposta da IA está vazia.")
-        # Remover marcação Markdown se presente
         conteudo = json.loads(resposta_ia_str)
-
         # Validar se o conteúdo é um JSON válido
-        try:
-            resultado = json.loads(conteudo)
-            print(resultado)
-            if isinstance(resultado, list) or isinstance(resultado, dict):
-                return resultado
-            else:
-                raise ValueError("O retorno não é um JSON válido.", conteudo)
-        except json.JSONDecodeError as e:
-            print("[ERRO IA] Conteúdo não é JSON válido:", e)
-            return []
+        if isinstance(conteudo, list) or isinstance(conteudo, dict):
+            return conteudo
+        else:
+            raise ValueError("O retorno não é um JSON válido.", conteudo)
     except Exception as e:
         print(f"[ERRO IA] {e}")
         return []
 
 # Função para rodar a chamada à IA e atualizar o Pipefy em background
-@cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
-def processar_ia(nome, resumo, cursos_final):
+async def processar_ia(nome, resumo, cursos_final):
     try:
         # Avaliar relevância com IA
-        avaliacoes_ia = avaliar_relevancia_ia(nome, resumo or "", cursos_final)
+        avaliacoes_ia = await avaliar_relevancia_ia(nome, resumo or "", cursos_final)
         avaliacoes_dict = {item["id"]: item for item in avaliacoes_ia}
 
         # Delete cursos with less than 3 stars:
@@ -193,7 +187,7 @@ def processar_ia(nome, resumo, cursos_final):
                 curso["comentario"] = "Não avaliado pela IA."
 
         # Delete cursos with menos de 3 estrelas:
-        cursos_final = {k: v for k, v in cursos_final.items() if int(v["estrelas"]) >= 3}
+        cursos_final = [c for c in cursos_final if int(c["estrelas"]) >= 3]
 
         # Ordenar por estrelas (desc), depois por score
         cursos_final.sort(key=lambda x: (x.get("estrelas", 0), x["score"]), reverse=True)
@@ -219,7 +213,7 @@ def processar_ia(nome, resumo, cursos_final):
         print(f"[ERRO] Erro ao processar IA ou atualizar Pipefy: {str(e)}")
         return {"message": "Erro ao processar: " + str(e)}
 
-def atualizar_pipefy(card_id, cursos_similares_str):
+async def atualizar_pipefy(card_id, cursos_similares_str):
     try:
         # Atualizar no Pipefy
         mutation = """
@@ -254,7 +248,7 @@ def atualizar_pipefy(card_id, cursos_similares_str):
 
 
 @app.get("/buscar/")
-@cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
+@cache_fastapi(expire=60, namespace="buscar_similaridade", key_builder=request_key_builder)
 async def buscar_similaridade(
     nome: str,
     card_id: str = None,
@@ -400,7 +394,7 @@ async def buscar_similaridade(
 
         if usar_ia:
             # Processar IA em background
-            cursos_similares_str = processar_ia(nome, resumo, cursos_final)
+            cursos_similares_str = await processar_ia(nome, resumo, cursos_final)
         else:
             cursos_similares_str = "🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n" \
             "\n".join(
@@ -428,7 +422,6 @@ async def buscar_similaridade(
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
     
 @app.get("/comparar-curso")
-@cache_fastapi(expire=60*5)  # Cache por 5 minutos
 async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_principal: str = ""):
     """
     Compara semanticamente um curso principal com um único curso similar.
@@ -441,7 +434,7 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
         # Preparar payload no mesmo formato usado na função de comparação múltipla
         curso = [{"nome": nome_similar}]
 
-        avaliacoes = avaliar_relevancia_ia(nome_principal, resumo_principal, curso)
+        avaliacoes = await avaliar_relevancia_ia(nome_principal, resumo_principal, curso)
 
         if not avaliacoes:
             return {"message": "A IA não conseguiu gerar uma avaliação."}
@@ -457,3 +450,19 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
+
+@app.get("/clear-cache")
+async def clear_cache():
+    redis_url = os.getenv("REDIS_URL")
+    redis = aioredis.from_url(redis_url, decode_responses=True)
+    
+    await redis.flushdb(asynchronous=True)
+    await FastAPICache.clear()
+    return {"message": "Cache limpo com sucesso (Redis DB)!"}
+
+@app.get("/list-redis-keys")
+async def list_redis_keys():
+    redis_url = os.getenv("REDIS_URL")
+    redis = aioredis.from_url(redis_url, decode_responses=True)
+    keys = await redis.keys("*")
+    return {"keys": keys}
