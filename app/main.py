@@ -14,6 +14,9 @@ import re
 import json
 from functools import lru_cache
 import orjson
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends
+import secrets
 
 class ORJSONResponse(Response):
     media_type = "application/json"
@@ -235,8 +238,25 @@ async def atualizar_pipefy(card_id, cursos_similares_str):
         print(f"[ERRO] Erro ao atualizar Pipefy: {str(e)}")
         return "error"
 
+# Parse users from env
+USERS = {}
+users_env = os.getenv("BASIC_AUTH_USERS")
+if users_env:
+    for pair in users_env.split(","):
+        if ":" in pair:
+            user, pwd = pair.split(":", 1)
+            USERS[user.strip()] = pwd.strip()
+
+security = HTTPBasic()
+
+def verify_basic_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    password = USERS.get(credentials.username)
+    if not password or not secrets.compare_digest(credentials.password, password):
+        raise HTTPException(status_code=401, detail="Acesso negado.", headers={"WWW-Authenticate": "Basic"})
+    return credentials
+
 @app.get("/")
-async def root():
+async def root(credentials: HTTPBasicCredentials = Depends(verify_basic_auth)):
     return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
 @app.get("/buscar")
@@ -249,7 +269,8 @@ async def buscar_similaridade(
     versao: str = None,
     coordenador: str = None,
     background_tasks: BackgroundTasks = None,
-    usar_ia: bool = True
+    usar_ia: bool = True,
+    credentials: HTTPBasicCredentials = Depends(verify_basic_auth)
 ):
     """
     Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
@@ -428,7 +449,12 @@ async def buscar_similaridade(
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
 
 @app.get("/comparar-curso")
-async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_principal: str = ""):
+async def comparar_cursos_unicos(
+    nome_principal: str,
+    nome_similar: str,
+    resumo_principal: str = "",
+    credentials: HTTPBasicCredentials = Depends(verify_basic_auth)
+):
     """
     Compara semanticamente um curso principal com um único curso similar.
     Retorna avaliação por estrelas e comentário explicativo da IA.
