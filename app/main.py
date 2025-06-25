@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from upstash_redis import Redis
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
@@ -11,18 +12,26 @@ import unicodedata
 import re
 import json
 from functools import lru_cache
+import orjson
+
+class ORJSONResponse(FastAPI.default_response_class):
+    media_type = "application/json"
+    def render(self, content: any) -> bytes:
+        return orjson.dumps(content)
 
 if os.getenv("ENVIRONMENT") == "development":
     load_dotenv()
 
-app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
+app = FastAPI(title="API de Similaridade de Cursos", version="1.0", default_response_class=ORJSONResponse)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Permitir todas as origens
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    max_age=86400  # cache preflight for 1 day
 )
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 redis = Redis.from_env()
 def preparar_para_embedding(texto: str) -> str:
@@ -42,18 +51,21 @@ ELASTIC_URL_TOKEN = os.getenv("ELASTIC_URL_TOKEN")
 # Configuração do Elasticsearch (Elastic Cloud)
 ELASTICSEARCH_URL = f"https://daniel-elasticsearch.ekyhxs.easypanel.host"
 
-# Inicializar cliente do Elasticsearch
+# Inicializar cliente do Elasticsearch com pool
 client = Elasticsearch(
     ELASTICSEARCH_URL,
-    basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD'))
+    basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD')),
+    max_retries=3,
+    retry_on_timeout=True,
+    request_timeout=10,
+    connections_per_node=10
 )
-
-@app.get("/")
-async def root():
-    return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
 @lru_cache(maxsize=1)
 def get_model():
+    # Optionally set threadpool limit for performance
+    os.environ["OMP_NUM_THREADS"] = "2"
+    os.environ["OPENBLAS_NUM_THREADS"] = "2"
     return SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 
 async def avaliar_relevancia_ia(nome, resumo, cursos):
@@ -221,6 +233,10 @@ async def atualizar_pipefy(card_id, cursos_similares_str):
     except Exception as e:
         print(f"[ERRO] Erro ao atualizar Pipefy: {str(e)}")
         return "error"
+
+@app.get("/")
+async def root():
+    return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
 @app.get("/buscar")
 async def buscar_similaridade(
