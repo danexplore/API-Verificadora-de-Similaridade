@@ -1,14 +1,17 @@
 services:
-  - name: api-similaridade
-    type: web
-    runtime: python              # usa o build nativo Python do Render
+  - type: web
+    name: api-similaridade
+    env: python          # build nativo Python do Render
     plan: free
+
+    # === cache das dependências entre builds ===
+    build:
+      cachePaths:
+        - /home/render/.cache/pip
+
     buildCommand: |
       pip install --upgrade pip
+      # força o pip a usar ~/ .cache/pip como cache de pacotes
       pip install --cache-dir="$HOME/.cache/pip" -r requirements.txt
+
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
-    # instruções de cache para acelerar builds futuros
-    build:
-      # Render vai salvar/restaurar essa pasta entre deploys
-      cachePaths:
-        - ~/.cache/pip
