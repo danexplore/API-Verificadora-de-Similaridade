@@ -1,8 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_cache.backends.redis import RedisBackend
-from fastapi_cache.decorator import cache as cache_fastapi
-from fastapi_cache import FastAPICache
+from upstash_redis import Redis
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
 import os
@@ -12,34 +10,12 @@ import requests
 import unicodedata
 import re
 import json
-from redis import asyncio as aioredis
 from functools import lru_cache
-from starlette.requests import Request
-from starlette.responses import Response
-
-def request_key_builder(func, namespace: str = "", *, request: Request = None, response: Response = None, **kwargs):
-    return ":".join([
-        namespace,
-        request.method.lower(),
-        request.url.path,
-        repr(sorted(request.query_params.items()))
-    ])
 
 if os.getenv("ENVIRONMENT") == "development":
     load_dotenv()
 
-async def lifespan(app: FastAPI):
-    redis_url = os.getenv("REDIS_URL")
-    redis = aioredis.from_url(redis_url, decode_responses=True)
-    try:
-        await redis.ping()
-    except Exception as e:
-        raise RuntimeError(f"Redis connection failed: {e}")
-    
-    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache", key_builder=request_key_builder)
-    yield
-
-app = FastAPI(title="API de Similaridade de Cursos", version="1.0", lifespan=lifespan)
+app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +24,7 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+redis = Redis.from_env()
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
     texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("utf-8")
@@ -166,7 +143,6 @@ async def avaliar_relevancia_ia(nome, resumo, cursos):
         print(f"[ERRO IA] {e}")
         return []
 
-# Função para rodar a chamada à IA e atualizar o Pipefy em background
 async def processar_ia(nome, resumo, cursos_final):
     try:
         # Avaliar relevância com IA
@@ -246,9 +222,7 @@ async def atualizar_pipefy(card_id, cursos_similares_str):
         print(f"[ERRO] Erro ao atualizar Pipefy: {str(e)}")
         return "error"
 
-
 @app.get("/buscar/")
-@cache_fastapi(expire=60, namespace="buscar_similaridade", key_builder=request_key_builder)
 async def buscar_similaridade(
     nome: str,
     card_id: str = None,
@@ -277,6 +251,11 @@ async def buscar_similaridade(
     Returns:
         dict: Dicionário com os cursos similares encontrados e suas informações, e caso possua o card_id vai atualizar o campo no Pipefy com os resultados.
     """
+    cache_key = f"buscar_similaridade:{nome}:{resumo}:{situacao}:{versao}:{coordenador}:{usar_ia}"
+    cached_data = redis.get(cache_key)
+    if cached_data:
+        return {"message": "cache", "cursos_similares": cached_data}
+
     try:
         if not nome:
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
@@ -406,7 +385,9 @@ async def buscar_similaridade(
                 f"--------------------------------------------------\n"
                 for curso in cursos_final
             )
-        
+
+        redis.setex(cache_key, 600, cursos_similares_str)
+
         if card_id:
             response = background_tasks.add_task(
                 atualizar_pipefy,
@@ -415,7 +396,7 @@ async def buscar_similaridade(
             )
             if response == "error":
                 return {"message": "Erro ao atualizar o campo do cartão no Pipefy.", "cursos_similares": cursos_similares_str}
-        return {"message": "Campo do cartão atualizado com sucesso.", "cursos_similares": cursos_similares_str}
+        return {"message": "Cursos similares encontrados.", "cursos_similares": cursos_similares_str}
 
 
     except Exception as e:
@@ -450,19 +431,3 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
-
-@app.get("/clear-cache")
-async def clear_cache():
-    redis_url = os.getenv("REDIS_URL")
-    redis = aioredis.from_url(redis_url, decode_responses=True)
-    
-    await redis.flushdb(asynchronous=True)
-    await FastAPICache.clear()
-    return {"message": "Cache limpo com sucesso (Redis DB)!"}
-
-@app.get("/list-redis-keys")
-async def list_redis_keys():
-    redis_url = os.getenv("REDIS_URL")
-    redis = aioredis.from_url(redis_url, decode_responses=True)
-    keys = await redis.keys("*")
-    return {"keys": keys}
