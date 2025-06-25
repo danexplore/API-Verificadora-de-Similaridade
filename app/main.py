@@ -13,31 +13,24 @@ import unicodedata
 import re
 import json
 from upstash_redis import Redis
+from functools import lru_cache
 
 if os.getenv("ENVIRONMENT") == "development":
     load_dotenv()
 
 async def lifespan(app: FastAPI):
-    REDIS_URL = os.getenv("REDIS_URL")
-    if not REDIS_URL:
-        raise ValueError("REDIS_URL não está definida nas variáveis de ambiente")
-    
-    # Configuração do Redis
     redis = Redis.from_env()
     FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+    yield
 
-app = FastAPI(lifespan=lifespan, title="API de Similaridade de Cursos", version="1.0")
+app = FastAPI(title="API de Similaridade de Cursos", version="1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Permitir todas as origens
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-
-@app.get("/")
-async def root():
-    return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
@@ -47,9 +40,6 @@ def preparar_para_embedding(texto: str) -> str:
     # Remover múltiplos espaços e deixar minúsculo
     texto = re.sub(r"\s+", " ", texto).strip().lower()
     return texto
-
-# Carregar variáveis de ambiente do .env
-load_dotenv()
 
 # Configuração do Pipefy
 PIPEFY_API_URL = "https://api.pipefy.com/graphql"
@@ -65,11 +55,13 @@ client = Elasticsearch(
     basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD'))
 )
 
-# Inicializar modelo de embeddings
-model = SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
+@app.get("/")
+async def root():
+    return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
-# Inicializar FastAPI
-app = FastAPI(title="API de Similaridade de Cursos", version="1.0")
+@lru_cache(maxsize=1)
+def get_model():
+    return SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
 
 @cache_fastapi(expire=60 * 60 * 24)  # Cache por 24 horas
 def avaliar_relevancia_ia(nome, resumo, cursos):
@@ -296,10 +288,10 @@ async def buscar_similaridade(
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
 
         nome_preparado = preparar_para_embedding(nome)
-        nome_vector = model.encode(f'query: {nome_preparado}').tolist()
+        nome_vector = get_model().encode(f'query: {nome_preparado}').tolist()
 
         resumo_preparado = preparar_para_embedding(resumo) if resumo else None
-        resumo_vector = model.encode(f'passage: {resumo_preparado}').tolist() if resumo_preparado else None
+        resumo_vector = get_model().encode(f'passage: {resumo_preparado}').tolist() if resumo_preparado else None
 
         # Filtros comuns para as duas buscas
         filters = []
