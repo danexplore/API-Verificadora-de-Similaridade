@@ -431,3 +431,13 @@ async def comparar_cursos_unicos(nome_principal: str, nome_similar: str, resumo_
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao comparar cursos: {str(e)}")
+    
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+@app.get("/refresh")
+async def refresh_cache():
+    redis.flushdb()
+    return {"message": "Cache refreshed successfully."}
