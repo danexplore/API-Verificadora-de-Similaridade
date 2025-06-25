@@ -1,0 +1,1 @@
+# API Verificadora de Similaridade
