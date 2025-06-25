@@ -70,7 +70,7 @@ def get_model():
     # Optionally set threadpool limit for performance
     os.environ["OMP_NUM_THREADS"] = "2"
     os.environ["OPENBLAS_NUM_THREADS"] = "2"
-    return SentenceTransformer('intfloat/e5-base-v2', cache_folder='/app/models')
+    return SentenceTransformer('intfloat/e5-base-v2')
 
 async def avaliar_relevancia_ia(nome, resumo, cursos):
     openai_api_key = os.getenv("OPENAI_API_KEY")
