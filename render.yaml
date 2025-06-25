@@ -1,6 +1,6 @@
 services:
-  - type: web
-    name: api-similaridade
+  - name: api-similaridade
+    type: web
     runtime: python
     plan: free
     buildCommand: |
