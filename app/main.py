@@ -4,10 +4,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
 from upstash_redis import Redis
 from sentence_transformers import SentenceTransformer
-from elasticsearch import Elasticsearch
-import os
 from openai import OpenAI
 from dotenv import load_dotenv
+import os
 import requests
 import unicodedata
 import re
@@ -53,20 +52,6 @@ def preparar_para_embedding(texto: str) -> str:
 # Configuração do Pipefy
 PIPEFY_API_URL = "https://api.pipefy.com/graphql"
 PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_TOKEN')
-
-ELASTIC_URL_TOKEN = os.getenv("ELASTIC_URL_TOKEN")
-# Configuração do Elasticsearch (Elastic Cloud)
-ELASTICSEARCH_URL = f"https://daniel-elasticsearch.ekyhxs.easypanel.host"
-
-# Inicializar cliente do Elasticsearch com pool
-client = Elasticsearch(
-    ELASTICSEARCH_URL,
-    basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD')),
-    max_retries=3,
-    retry_on_timeout=True,
-    request_timeout=10,
-    connections_per_node=10
-)
 
 @lru_cache(maxsize=1)
 def get_model():
@@ -273,21 +258,7 @@ async def buscar_similaridade(
     credentials: HTTPBasicCredentials = Depends(verify_basic_auth)
 ):
     """
-    Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
-
-    Args:
-        nome (str): Nome do curso a ser buscado.
-        card_id (str, optional): ID do cartão no Pipefy para atualizar com os resultados. Default é None.
-        qtd_respostas (int, optional): Quantidade de respostas a serem retornadas. Default é 50.
-        resumo (str, optional): Resumo do curso a ser buscado. Default é None.
-        situacao (str, optional): Situação do curso para filtro. Default é None.
-        versao (str, optional): Versão do curso para filtro. Default é None.
-        coordenador (str, optional): Coordenador do curso para filtro. Default é None.
-        background_tasks (BackgroundTasks, optional): Tarefas em segundo plano para atualizar Pipefy. Default é None.
-        usar_ia (bool, optional): Se True, processa IA para avaliar relevância dos cursos encontrados. Default é True.
-    
-    Returns:
-        dict: Dicionário com os cursos similares encontrados e suas informações, e caso possua o card_id vai atualizar o campo no Pipefy com os resultados.
+    Busca cursos similares usando Upstash Vector e recupera meta-dados do Redis.
     """
     cache_key = f"buscar_similaridade:{nome}:{resumo}:{situacao}:{versao}:{coordenador}:{usar_ia}"
     cached_data = redis.json.get(cache_key)
@@ -298,119 +269,46 @@ async def buscar_similaridade(
         if not nome:
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
 
+        model = get_model()
         nome_preparado = preparar_para_embedding(nome)
-        nome_vector = get_model().encode(f'query: {nome_preparado}').tolist()
+        vector_nome = model.encode(f"query: {nome_preparado}").tolist()
 
-        resumo_preparado = preparar_para_embedding(resumo) if resumo else None
-        resumo_vector = get_model().encode(f'passage: {resumo_preparado}').tolist() if resumo_preparado else None
-
-        # Filtros comuns para as duas buscas
-        filters = []
-        if situacao:
-            situacoes = [s.strip() for s in situacao.split(",")]
-            filters.append({"terms": {"situacao": situacoes}})
-        if versao:
-            versoes = [v.strip() for v in versao.split(",")]
-            filters.append({"terms": {"versao": versoes}})
-        if coordenador:
-            filters.append({"match_phrase_prefix": {"coordenador": {"query": coordenador}}})
-
-        # Função para montar a query de KNN
-        if usar_ia:
-            def montar_query_knn(vector_field, vector):
-                return {
-                    "size": 50,
-                    "query": {
-                        "bool": {
-                            "filter": filters,
-                            "must": {
-                                "knn": {
-                                    "field": vector_field,
-                                    "query_vector": vector,
-                                    "k": 150,
-                                    "num_candidates": 300
-                                }
-                            }
-                        }
-                    },
-                    "_source": ["nome", "coordenador", "situacao", "versao"]
-                }
-        else:
-            def montar_query_knn(vector_field, vector):
-                return {
-                    "size": 50,
-                    "query": {
-                        "bool": {
-                            "filter": filters,
-                            "must": {
-                                "knn": {
-                                    "field": vector_field,
-                                    "query_vector": vector,
-                                    "k": 150,
-                                    "num_candidates": 300
-                                }
-                            }
-                        }
-                    },
-                    "_source": ["nome", "coordenador", "situacao", "versao"]
-                }
-
-        # Executa busca por nome
-        query_nome = montar_query_knn("nome_vector", nome_vector)
-        res_nome = client.search(index="cursos_producao", body=query_nome)["hits"]["hits"]
-
-        # Executa busca por resumo, se houver
-        res_resumo = []
-        if resumo_vector:
-            query_resumo = montar_query_knn("resumo_vector", resumo_vector)
-            res_resumo = client.search(index="cursos_producao", body=query_resumo)["hits"]["hits"]
-
-        # Indexar os scores
-        scores_nome = {r["_id"]: r["_score"] for r in res_nome}
-        scores_resumo = {r["_id"]: r["_score"] for r in res_resumo} if res_resumo else {}
-
-        # Mesclar e calcular score final
-        todos_ids = set(scores_nome.keys()).union(scores_resumo.keys())
-        peso_nome = 0.7
-        peso_resumo = 0.3
+        VECTOR_SEARCH_URL = os.getenv("UPSTASH_VECTOR_URL") + "/query"
+        VECTOR_TOKEN = os.getenv("UPSTASH_VECTOR_TOKEN")
+        headers = {
+            "Authorization": f"Bearer {VECTOR_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "vector": vector_nome,
+            "topK": qtd_respostas
+        }
+        response = requests.post(VECTOR_SEARCH_URL, headers=headers, json=payload)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Erro na busca vetorial: {response.text}")
+        resultados = response.json()
 
         cursos_final = []
-        for _id in todos_ids:
-            score_nome = scores_nome.get(_id, 0)
-            score_resumo = scores_resumo.get(_id, 0)
-            if not score_resumo == 0:
-                score_final = (peso_nome * score_nome) + (peso_resumo * score_resumo)
-            else:
-                score_final = score_nome
-            if score_final < 0.92:
+        for res in resultados.get("matches", []):
+            curso_meta = redis.hgetall(f"curso:{res['id']}")
+            if not curso_meta:
                 continue
 
-            # Buscar o documento completo (de qualquer uma das buscas)
-            doc = next((r for r in res_nome + res_resumo if r["_id"] == _id), None)
-            if not doc:
+            # Filtros opcionais
+            if situacao and curso_meta.get("situacao") not in situacao.split(","):
+                continue
+            if versao and curso_meta.get("versao") not in versao.split(","):
+                continue
+            if coordenador and coordenador.lower() not in (curso_meta.get("coordenador") or '').lower():
                 continue
 
-            curso = {
-                "nome": doc["_source"]["nome"],
-                "coordenador": doc["_source"].get("coordenador"),
-                "situacao": doc["_source"].get("situacao"),
-                "versao": doc["_source"].get("versao"),
-                "score": round(score_final, 2) * 100,  # Normalizando para porcentagem
-                "score_nome": round(score_nome, 2) * 100
-            }
-            if score_resumo > 0:
-                curso["score_resumo"] = round(score_resumo, 2) * 100
-            else:
-                curso["score_resumo"] = 0
-            cursos_final.append(curso)
+            curso_meta["score"] = round(res["score"], 2) * 100
+            cursos_final.append(curso_meta)
 
-        # Ordenar por Elasticsearch
         cursos_final.sort(key=lambda x: x["score"], reverse=True)
-
         cursos_final = cursos_final[:qtd_respostas]
 
         if usar_ia:
-            # Processar IA em background
             cursos_similares_str, cursos_filtrados = await processar_ia(nome, resumo, cursos_final)
         else:
             cursos_similares_str = "🔍 Cursos Similares Encontrados:\n--------------------------------------------------\n" \
@@ -443,7 +341,6 @@ async def buscar_similaridade(
             if response == "error":
                 return {"message": "Erro ao atualizar o campo do cartão no Pipefy.", "cursos_similares": cursos_similares_str}
         return result
-
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
