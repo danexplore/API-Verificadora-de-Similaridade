@@ -270,7 +270,7 @@ class CourseSimilaritySearch(BaseModel):
     coordenador: str = None
     usar_ia: bool = True
 
-@app.get("/buscar")
+@app.post("/buscar")
 async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTPBasicCredentials = Depends(verify_basic_auth), background_tasks: BackgroundTasks = None):
     """
     Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
@@ -297,7 +297,7 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
     coordenador = payload.coordenador.strip() if payload.coordenador else None
     usar_ia = payload.usar_ia
     resumo = payload.resumo.strip() if payload.resumo else None
-    
+
     cache_key = f"buscar_similaridade:{nome}:{resumo}:{situacao}:{versao}:{coordenador}:{usar_ia}"
     cached_data = redis.json.get(cache_key)
     if cached_data:
