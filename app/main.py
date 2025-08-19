@@ -17,6 +17,7 @@ import orjson
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 import secrets
+from pydantic import BaseModel
 
 class ORJSONResponse(Response):
     media_type = "application/json"
@@ -259,19 +260,18 @@ def verify_basic_auth(credentials: HTTPBasicCredentials = Depends(security)):
 async def root(credentials: HTTPBasicCredentials = Depends(verify_basic_auth)):
     return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
-@app.get("/buscar")
-async def buscar_similaridade(
-    nome: str,
-    card_id: str = None,
-    qtd_respostas: int = 50,
-    resumo: str = None,
-    situacao: str = None,
-    versao: str = None,
-    coordenador: str = None,
-    background_tasks: BackgroundTasks = None,
-    usar_ia: bool = True,
-    credentials: HTTPBasicCredentials = Depends(verify_basic_auth)
-):
+class CourseSimilaritySearch(BaseModel):
+    nome: str
+    card_id: str = None
+    qtd_respostas: int = 50
+    resumo: str = None
+    situacao: str = None
+    versao: str = None
+    coordenador: str = None
+    usar_ia: bool = True
+
+@app.post("/buscar")
+async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTPBasicCredentials = Depends(verify_basic_auth), background_tasks: BackgroundTasks = None):
     """
     Busca cursos similares no Elasticsearch usando nome e resumo do curso com busca híbrida (texto + vetor).
 
@@ -289,6 +289,15 @@ async def buscar_similaridade(
     Returns:
         dict: Dicionário com os cursos similares encontrados e suas informações, e caso possua o card_id vai atualizar o campo no Pipefy com os resultados.
     """
+    nome = payload.nome.strip()
+    card_id = payload.card_id.strip() if payload.card_id else None
+    qtd_respostas = payload.qtd_respostas
+    situacao = payload.situacao.strip() if payload.situacao else None
+    versao = payload.versao.strip() if payload.versao else None
+    coordenador = payload.coordenador.strip() if payload.coordenador else None
+    usar_ia = payload.usar_ia
+    resumo = payload.resumo.strip() if payload.resumo else None
+
     cache_key = f"buscar_similaridade:{nome}:{resumo}:{situacao}:{versao}:{coordenador}:{usar_ia}"
     cached_data = redis.json.get(cache_key)
     if cached_data:
