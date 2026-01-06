@@ -4,9 +4,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
 from upstash_redis import Redis
 from sentence_transformers import SentenceTransformer
-from elasticsearch import Elasticsearch
+from pinecone import Pinecone, ServerlessSpec
 import os
-from openai import OpenAI
+import google.generativeai as genai
 from dotenv import load_dotenv
 import requests
 import unicodedata
@@ -24,8 +24,8 @@ class ORJSONResponse(Response):
     def render(self, content: any) -> bytes:
         return orjson.dumps(content)
 
-if os.getenv("ENVIRONMENT") == "development":
-    load_dotenv()
+# Always load .env variables (works for both local and production environments)
+load_dotenv()
 
 app = FastAPI(
     title="API de Similaridade de Cursos",
@@ -41,7 +41,27 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-redis = Redis.from_env()
+# Lazy loading for Redis and Pinecone Index
+redis = None
+
+def get_redis():
+    global redis
+    if redis is None:
+        redis = Redis.from_env()
+    return redis
+
+# Configuração do Pinecone (versão 8.x)
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+
+# Lazy load do índice - será carregado quando necessário
+index = None
+
+def get_index():
+    global index
+    if index is None:
+        index = pc.Index("cursos-producao")
+    return index
+
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
     texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("utf-8")
@@ -53,21 +73,10 @@ def preparar_para_embedding(texto: str) -> str:
 
 # Configuração do Pipefy
 PIPEFY_API_URL = "https://api.pipefy.com/graphql"
-PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_TOKEN')
+PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_KEY')
 
-ELASTIC_URL_TOKEN = os.getenv("ELASTIC_URL_TOKEN")
-# Configuração do Elasticsearch (Elastic Cloud)
-ELASTICSEARCH_URL = f"https://daniel-elasticsearch.ekyhxs.easypanel.host"
-
-# Inicializar cliente do Elasticsearch com pool
-client = Elasticsearch(
-    ELASTICSEARCH_URL,
-    basic_auth=(os.getenv('ELASTIC_USERNAME'), os.getenv('ELASTIC_PASSWORD')),
-    max_retries=3,
-    retry_on_timeout=True,
-    request_timeout=10,
-    connections_per_node=10
-)
+# Configure Google Gemini AI
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 @lru_cache(maxsize=1)
 def get_model():
@@ -77,11 +86,6 @@ def get_model():
     return SentenceTransformer('intfloat/e5-base-v2')
 
 async def avaliar_relevancia_ia(nome, resumo, cursos):
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        raise ValueError("A variável de ambiente OPENAI_API_KEY não está definida.")
-    client_openai = OpenAI(api_key=openai_api_key)
-
     if resumo == "":
         resumo = "Resumo do curso não fornecido, continue a análise somente com o nome do curso."
 
@@ -133,24 +137,11 @@ async def avaliar_relevancia_ia(nome, resumo, cursos):
             "- Utilize a escala de estrelas para ajudar a distinguir cursos que podem parecer similares, mas têm diferenças significativas a serem consideradas."
         )
 
-    payload = {
-        "model": "gpt-4.1",
-        "messages": [
-            {
-                "role": "system",
-                "content": instrucoes
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0.5
-    }
     try:
-        response = client_openai.chat.completions.create(**payload)
-
-        resposta_ia_str = response.choices[0].message.content
+        model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=instrucoes)
+        response = model.generate_content(prompt)
+        
+        resposta_ia_str = response.text
         if not resposta_ia_str:
             raise ValueError("Resposta da IA está vazia.")
         conteudo = json.loads(resposta_ia_str)
@@ -299,7 +290,7 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
     resumo = payload.resumo.strip() if payload.resumo else None
 
     cache_key = f"buscar_similaridade:{nome}:{resumo}:{situacao}:{versao}:{coordenador}:{usar_ia}"
-    cached_data = redis.json.get(cache_key)
+    cached_data = get_redis().json.get(cache_key)
     if cached_data:
         return cached_data[0]
 
@@ -313,70 +304,30 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
         resumo_preparado = preparar_para_embedding(resumo) if resumo else None
         resumo_vector = get_model().encode(f'passage: {resumo_preparado}').tolist() if resumo_preparado else None
 
-        # Filtros comuns para as duas buscas
-        filters = []
+        # Filtros para Pinecone
+        metadata_filter = {}
         if situacao:
             situacoes = [s.strip() for s in situacao.split(",")]
-            filters.append({"terms": {"situacao": situacoes}})
+            metadata_filter["situacao"] = {"$in": situacoes}
         if versao:
             versoes = [v.strip() for v in versao.split(",")]
-            filters.append({"terms": {"versao": versoes}})
+            metadata_filter["versao"] = {"$in": versoes}
         if coordenador:
-            filters.append({"match_phrase_prefix": {"coordenador": {"query": coordenador}}})
+            metadata_filter["coordenador"] = {"$eq": coordenador}
 
-        # Função para montar a query de KNN
-        if usar_ia:
-            def montar_query_knn(vector_field, vector):
-                return {
-                    "size": 50,
-                    "query": {
-                        "bool": {
-                            "filter": filters,
-                            "must": {
-                                "knn": {
-                                    "field": vector_field,
-                                    "query_vector": vector,
-                                    "k": 150,
-                                    "num_candidates": 300
-                                }
-                            }
-                        }
-                    },
-                    "_source": ["nome", "coordenador", "situacao", "versao"]
-                }
-        else:
-            def montar_query_knn(vector_field, vector):
-                return {
-                    "size": 50,
-                    "query": {
-                        "bool": {
-                            "filter": filters,
-                            "must": {
-                                "knn": {
-                                    "field": vector_field,
-                                    "query_vector": vector,
-                                    "k": 150,
-                                    "num_candidates": 300
-                                }
-                            }
-                        }
-                    },
-                    "_source": ["nome", "coordenador", "situacao", "versao"]
-                }
+        # Busca por nome
+        res_nome = get_index().query(vector=nome_vector, top_k=150, include_metadata=True, filter=metadata_filter if metadata_filter else None)
+        matches_nome = res_nome.get("matches", []) if res_nome else []
 
-        # Executa busca por nome
-        query_nome = montar_query_knn("nome_vector", nome_vector)
-        res_nome = client.search(index="cursos_producao", body=query_nome)["hits"]["hits"]
-
-        # Executa busca por resumo, se houver
-        res_resumo = []
+        # Busca por resumo, se houver
+        matches_resumo = []
         if resumo_vector:
-            query_resumo = montar_query_knn("resumo_vector", resumo_vector)
-            res_resumo = client.search(index="cursos_producao", body=query_resumo)["hits"]["hits"]
+            res_resumo = get_index().query(vector=resumo_vector, top_k=150, include_metadata=True, filter=metadata_filter if metadata_filter else None)
+            matches_resumo = res_resumo.get("matches", []) if res_resumo else []
 
         # Indexar os scores
-        scores_nome = {r["_id"]: r["_score"] for r in res_nome}
-        scores_resumo = {r["_id"]: r["_score"] for r in res_resumo} if res_resumo else {}
+        scores_nome = {m["id"]: m["score"] for m in matches_nome}
+        scores_resumo = {m["id"]: m["score"] for m in matches_resumo} if matches_resumo else {}
 
         # Mesclar e calcular score final
         todos_ids = set(scores_nome.keys()).union(scores_resumo.keys())
@@ -391,21 +342,22 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
                 score_final = (peso_nome * score_nome) + (peso_resumo * score_resumo)
             else:
                 score_final = score_nome
-            if score_final < 0.92:
+            if score_final < 0.5:
                 continue
 
-            # Buscar o documento completo (de qualquer uma das buscas)
-            doc = next((r for r in res_nome + res_resumo if r["_id"] == _id), None)
-            if not doc:
+            # Buscar o documento completo (metadados do Pinecone)
+            match = next((m for m in matches_nome + matches_resumo if m["id"] == _id), None)
+            if not match:
                 continue
 
+            metadata = match.get("metadata", {})
             curso = {
-                "nome": doc["_source"]["nome"],
-                "coordenador": doc["_source"].get("coordenador"),
-                "situacao": doc["_source"].get("situacao"),
-                "versao": doc["_source"].get("versao"),
-                "score": round(score_final, 2) * 100,  # Normalizando para porcentagem
-                "score_nome": round(score_nome, 2) * 100
+                "nome": metadata.get("nome"),
+                "coordenador": metadata.get("coordenador"),
+                "situacao": metadata.get("situacao"),
+                "versao": metadata.get("versao"),
+                "score": round(score_final * 100, 2),  # Normalizando para porcentagem
+                "score_nome": round(score_nome * 100, 2)
             }
             if score_resumo > 0:
                 curso["score_resumo"] = round(score_resumo, 2) * 100
@@ -441,7 +393,7 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
             "qtd_cursos_encontrados": len(cursos_filtrados)
         }
 
-        redis.json.set(cache_key, path="$", value=result, nx=True)
+        get_redis().json.set(cache_key, path="$", value=result, nx=True)
 
         if card_id:
             response = background_tasks.add_task(
@@ -469,7 +421,7 @@ async def comparar_cursos_unicos(
     Retorna avaliação por estrelas e comentário explicativo da IA.
     """
     redis_key = f"comparar_cursos_unicos:{nome_principal}:{nome_similar}:{resumo_principal}"
-    cached_data = redis.get(redis_key)
+    cached_data = get_redis().get(redis_key)
     if cached_data:
         return json.loads(cached_data)
     try:
@@ -492,7 +444,7 @@ async def comparar_cursos_unicos(
             "comentario": avaliacao["comentario"],
             "avaliacao_visual": "⭐" * int(avaliacao["estrelas"])
         }
-        redis.setex(redis_key, 600, json.dumps(curso_similar))
+        get_redis().setex(redis_key, 600, json.dumps(curso_similar))
         return json.dumps(curso_similar)
 
     except Exception as e:
@@ -505,5 +457,5 @@ async def health_check():
 
 @app.get("/refresh")
 async def refresh_cache():
-    redis.flushdb()
+    get_redis().flushdb()
     return {"message": "Cache refreshed successfully."}
