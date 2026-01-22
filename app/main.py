@@ -4,8 +4,6 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
 from typing import Optional
 from upstash_redis import Redis
-from sentence_transformers import SentenceTransformer
-from elasticsearch import Elasticsearch
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -57,44 +55,6 @@ def preparar_para_embedding(texto: str) -> str:
 # Configuração do Pipefy
 PIPEFY_API_URL = "https://api.pipefy.com/graphql"
 PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_TOKEN')
-
-# Configuração do Elasticsearch (Elastic Cloud)
-ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "https://daniel-elasticsearch.ekyhxs.easypanel.host")
-
-# Inicializar cliente do Elasticsearch com pool
-elastic_api_key = os.getenv('ELASTICSEARCH_API_KEY')
-
-try:
-    if elastic_api_key:
-        # Usar API key se disponível (formato: id:api_key)
-        client = Elasticsearch(
-            ELASTICSEARCH_URL,
-            api_key=elastic_api_key,
-            max_retries=3,
-            retry_on_timeout=True,
-            request_timeout=10,
-            connections_per_node=10,
-            verify_certs=False
-        )
-    else:
-        # Tentar usar basic auth se disponível
-        elastic_username = os.getenv('ELASTIC_USERNAME')
-        elastic_password = os.getenv('ELASTIC_PASSWORD')
-        if elastic_username and elastic_password:
-            client = Elasticsearch(
-                ELASTICSEARCH_URL,
-                basic_auth=(elastic_username, elastic_password),
-                max_retries=3,
-                retry_on_timeout=True,
-                request_timeout=10,
-                connections_per_node=10,
-                verify_certs=False
-            )
-        else:
-            client = None
-except Exception as e:
-    print(f"Aviso: Falha ao conectar ao Elasticsearch: {e}")
-    client = None
 
 @lru_cache(maxsize=1)
 def get_model():
@@ -337,100 +297,10 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
         if not nome:
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
 
-        if not client:
-            raise HTTPException(status_code=503, detail="Serviço de busca indisponível. Verifique as variáveis de ambiente do Elasticsearch.")
-
-        nome_preparado = preparar_para_embedding(nome)
-        nome_vector = get_model().encode(f'query: {nome_preparado}').tolist()
-
-        resumo_preparado = preparar_para_embedding(resumo) if resumo else None
-        resumo_vector = get_model().encode(f'passage: {resumo_preparado}').tolist() if resumo_preparado else None
-
-        # Filtros comuns para as duas buscas
-        filters = []
-        if situacao:
-            situacoes = [s.strip() for s in situacao.split(",")]
-            filters.append({"terms": {"situacao": situacoes}})
-        if versao:
-            versoes = [v.strip() for v in versao.split(",")]
-            filters.append({"terms": {"versao": versoes}})
-        if coordenador:
-            filters.append({"match_phrase_prefix": {"coordenador": {"query": coordenador}}})
-
-        # Função para montar a query de KNN
-        if usar_ia:
-            def montar_query_knn(vector_field, vector):
-                return {
-                    "size": 50,
-                    "query": {
-                        "bool": {
-                            "filter": filters,
-                            "must": {
-                                "knn": {
-                                    "field": vector_field,
-                                    "query_vector": vector,
-                                    "k": 150,
-                                    "num_candidates": 300
-                                }
-                            }
-                        }
-                    },
-                    "_source": ["nome", "coordenador", "situacao", "versao"]
-                }
-        else:
-            def montar_query_knn(vector_field, vector):
-                return {
-                    "size": 50,
-                    "query": {
-                        "bool": {
-                            "filter": filters,
-                            "must": {
-                                "knn": {
-                                    "field": vector_field,
-                                    "query_vector": vector,
-                                    "k": 150,
-                                    "num_candidates": 300
-                                }
-                            }
-                        }
-                    },
-                    "_source": ["nome", "coordenador", "situacao", "versao"]
-                }
-
-        # Executa busca por nome
-        query_nome = montar_query_knn("nome_vector", nome_vector)
-        res_nome = client.search(index="cursos_producao", body=query_nome)["hits"]["hits"]
-
-        # Executa busca por resumo, se houver
-        res_resumo = []
-        if resumo_vector:
-            query_resumo = montar_query_knn("resumo_vector", resumo_vector)
-            res_resumo = client.search(index="cursos_producao", body=query_resumo)["hits"]["hits"]
-
-        # Indexar os scores
-        scores_nome = {r["_id"]: r["_score"] for r in res_nome}
-        scores_resumo = {r["_id"]: r["_score"] for r in res_resumo} if res_resumo else {}
-
-        # Mesclar e calcular score final
-        todos_ids = set(scores_nome.keys()).union(scores_resumo.keys())
-        peso_nome = 0.7
-        peso_resumo = 0.3
-
-        cursos_final = []
-        for _id in todos_ids:
-            score_nome = scores_nome.get(_id, 0)
-            score_resumo = scores_resumo.get(_id, 0)
-            if not score_resumo == 0:
-                score_final = (peso_nome * score_nome) + (peso_resumo * score_resumo)
-            else:
-                score_final = score_nome
-            if score_final < 0.92:
-                continue
-
-            # Buscar o documento completo (de qualquer uma das buscas)
-            doc = next((r for r in res_nome + res_resumo if r["_id"] == _id), None)
-            if not doc:
-                continue
+        raise HTTPException(
+            status_code=503, 
+            detail="Serviço de busca de cursos indisponível. O Elasticsearch foi removido. Procure o administrador."
+        )
 
             curso = {
                 "nome": doc["_source"]["nome"],
