@@ -286,14 +286,16 @@ def verify_basic_auth(credentials: HTTPBasicCredentials = Depends(security)):
 async def root(credentials: HTTPBasicCredentials = Depends(verify_basic_auth)):
     return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
 
+from typing import Optional
+
 class CourseSimilaritySearch(BaseModel):
     nome: str
-    card_id: str = None
+    card_id: Optional[str] = None
     qtd_respostas: int = 50
-    resumo: str = None
-    situacao: str = None
-    versao: str = None
-    coordenador: str = None
+    resumo: Optional[str] = None
+    situacao: Optional[str] = None
+    versao: Optional[str] = None
+    coordenador: Optional[str] = None
     usar_ia: bool = True
 
 @app.post("/buscar")
