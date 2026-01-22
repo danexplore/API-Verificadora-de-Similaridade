@@ -61,32 +61,38 @@ PIPEFY_API_TOKEN = os.getenv('PIPEFY_API_TOKEN')
 ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "https://daniel-elasticsearch.ekyhxs.easypanel.host")
 
 # Inicializar cliente do Elasticsearch com pool
-elastic_username = os.getenv('ELASTIC_USERNAME')
-elastic_password = os.getenv('ELASTIC_PASSWORD')
 elastic_api_key = os.getenv('ELASTICSEARCH_API_KEY')
 
-if elastic_api_key:
-    # Usar API key se disponível
-    client = Elasticsearch(
-        ELASTICSEARCH_URL,
-        api_key=elastic_api_key,
-        max_retries=3,
-        retry_on_timeout=True,
-        request_timeout=10,
-        connections_per_node=10
-    )
-elif elastic_username and elastic_password:
-    # Usar basic auth se disponível
-    client = Elasticsearch(
-        ELASTICSEARCH_URL,
-        basic_auth=(elastic_username, elastic_password),
-        max_retries=3,
-        retry_on_timeout=True,
-        request_timeout=10,
-        connections_per_node=10
-    )
-else:
-    # Não conectar ao Elasticsearch se credenciais não estiverem disponíveis
+try:
+    if elastic_api_key:
+        # Usar API key se disponível (formato: id:api_key)
+        client = Elasticsearch(
+            ELASTICSEARCH_URL,
+            api_key=elastic_api_key,
+            max_retries=3,
+            retry_on_timeout=True,
+            request_timeout=10,
+            connections_per_node=10,
+            verify_certs=False
+        )
+    else:
+        # Tentar usar basic auth se disponível
+        elastic_username = os.getenv('ELASTIC_USERNAME')
+        elastic_password = os.getenv('ELASTIC_PASSWORD')
+        if elastic_username and elastic_password:
+            client = Elasticsearch(
+                ELASTICSEARCH_URL,
+                basic_auth=(elastic_username, elastic_password),
+                max_retries=3,
+                retry_on_timeout=True,
+                request_timeout=10,
+                connections_per_node=10,
+                verify_certs=False
+            )
+        else:
+            client = None
+except Exception as e:
+    print(f"Aviso: Falha ao conectar ao Elasticsearch: {e}")
     client = None
 
 @lru_cache(maxsize=1)
@@ -326,6 +332,9 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
     try:
         if not nome:
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
+
+        if not client:
+            raise HTTPException(status_code=503, detail="Serviço de busca indisponível. Verifique as variáveis de ambiente do Elasticsearch.")
 
         nome_preparado = preparar_para_embedding(nome)
         nome_vector = get_model().encode(f'query: {nome_preparado}').tolist()
