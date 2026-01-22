@@ -23,8 +23,8 @@ import time
 # Configuração inicial
 # =========================
 
-if os.getenv("ENVIRONMENT") == "development":
-    load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 class ORJSONResponse(Response):
     media_type = "application/json"
@@ -144,22 +144,21 @@ async def atualizar_pipefy(card_id, cursos_similares_str):
 # Elasticsearch
 # =========================
 
-ELASTICSEARCH_URL = "https://daniel-elasticsearch.ekyhxs.easypanel.host"
+from elasticsearch import Elasticsearch
+import os
 
-client = Elasticsearch(
-    ELASTICSEARCH_URL,
-    basic_auth=(os.getenv("ELASTIC_USERNAME"), os.getenv("ELASTIC_PASSWORD")),
-    max_retries=3,
-    retry_on_timeout=True,
-    request_timeout=10,
-    connections_per_node=10
-)
+ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL")
+ELASTICSEARCH_API_KEY = os.getenv("ELASTICSEARCH_API_KEY")
 
-@lru_cache(maxsize=1)
-def get_model():
-    os.environ["OMP_NUM_THREADS"] = "2"
-    os.environ["OPENBLAS_NUM_THREADS"] = "2"
-    return SentenceTransformer("intfloat/e5-base-v2")
+es_client = None
+
+if ELASTICSEARCH_URL and ELASTICSEARCH_API_KEY:
+    es_client = Elasticsearch(
+        ELASTICSEARCH_URL,
+        api_key=ELASTICSEARCH_API_KEY,
+        connections_per_node=10,
+    )
+
 
 # =========================
 # OpenAI
