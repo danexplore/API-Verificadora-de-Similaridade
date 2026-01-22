@@ -325,9 +325,12 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
     resumo = payload.resumo.strip() if payload.resumo else None
 
     cache_key = f"buscar_similaridade:{nome}:{resumo}:{situacao}:{versao}:{coordenador}:{usar_ia}"
-    cached_data = redis.json.get(cache_key)
-    if cached_data:
-        return cached_data[0]
+    try:
+        cached_data = redis.get(cache_key)
+        if cached_data:
+            return json.loads(cached_data)
+    except Exception as e:
+        print(f"Aviso: Erro ao recuperar cache: {e}")
 
     try:
         if not nome:
@@ -470,7 +473,10 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
             "qtd_cursos_encontrados": len(cursos_filtrados)
         }
 
-        redis.json.set(cache_key, path="$", value=result, nx=True)
+        try:
+            redis.setex(cache_key, 3600, json.dumps(result))
+        except Exception as e:
+            print(f"Aviso: Erro ao salvar cache: {e}")
 
         if card_id:
             response = background_tasks.add_task(
