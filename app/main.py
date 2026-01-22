@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
+from typing import Optional
 from upstash_redis import Redis
 from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
@@ -285,8 +286,6 @@ def verify_basic_auth(credentials: HTTPBasicCredentials = Depends(security)):
 @app.get("/")
 async def root(credentials: HTTPBasicCredentials = Depends(verify_basic_auth)):
     return {"message": "API de Similaridade de Cursos Unyleya - Versão 1.0"}
-
-from typing import Optional
 
 class CourseSimilaritySearch(BaseModel):
     nome: str
