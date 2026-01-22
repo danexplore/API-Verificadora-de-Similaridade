@@ -17,6 +17,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
 import secrets
 from pydantic import BaseModel
+from elasticsearch import Elasticsearch
+from sentence_transformers import SentenceTransformer
 
 class ORJSONResponse(Response):
     media_type = "application/json"
@@ -43,6 +45,23 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 redis = Redis.from_env()
+
+# Inicializar cliente Elasticsearch
+elasticsearch_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+elasticsearch_api_key = os.getenv("ELASTICSEARCH_API_KEY", "")
+
+try:
+    if elasticsearch_api_key:
+        es_client = Elasticsearch([elasticsearch_url], api_key=elasticsearch_api_key)
+    else:
+        es_client = Elasticsearch([elasticsearch_url])
+    # Testar conexão
+    es_client.info()
+    print("[OK] Elasticsearch conectado com sucesso")
+except Exception as e:
+    print(f"[WARNING] Nao foi possivel conectar ao Elasticsearch: {e}")
+    es_client = None
+
 def preparar_para_embedding(texto: str) -> str:
     # Remover acentos
     texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("utf-8")
@@ -297,26 +316,107 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
         if not nome:
             raise HTTPException(status_code=400, detail="Nome do curso é obrigatório.")
 
-        raise HTTPException(
-            status_code=503, 
-            detail="Serviço de busca de cursos indisponível. O Elasticsearch foi removido. Procure o administrador."
-        )
+        if not es_client:
+            raise HTTPException(
+                status_code=503, 
+                detail="Serviço de busca de cursos indisponível. Elasticsearch não está disponível."
+            )
 
-            curso = {
-                "nome": doc["_source"]["nome"],
-                "coordenador": doc["_source"].get("coordenador"),
-                "situacao": doc["_source"].get("situacao"),
-                "versao": doc["_source"].get("versao"),
-                "score": round(score_final, 2) * 100,  # Normalizando para porcentagem
-                "score_nome": round(score_nome, 2) * 100
+        # Obter modelo para embeddings
+        model = get_model()
+        
+        # Preparar textos para embedding
+        nome_preparado = preparar_para_embedding(nome)
+        resumo_preparado = preparar_para_embedding(resumo) if resumo else ""
+        
+        # Gerar embeddings
+        texto_embedding = nome if not resumo else f"{nome} {resumo}"
+        embedding = model.encode(texto_embedding).tolist()
+        
+        # Preparar filtros
+        filters = []
+        if situacao:
+            filters.append({"term": {"situacao.keyword": situacao}})
+        if versao:
+            filters.append({"term": {"versao.keyword": versao}})
+        if coordenador:
+            filters.append({"term": {"coordenador.keyword": coordenador}})
+        
+        # Construir query para Elasticsearch
+        query = {
+            "bool": {
+                "should": [
+                    {
+                        "match": {
+                            "nome": {
+                                "query": nome_preparado,
+                                "boost": 2
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "resumo": {
+                                "query": resumo_preparado if resumo_preparado else nome_preparado,
+                                "boost": 1
+                            }
+                        }
+                    }
+                ],
+                "minimum_should_match": 1
             }
-            if score_resumo > 0:
-                curso["score_resumo"] = round(score_resumo, 2) * 100
-            else:
-                curso["score_resumo"] = 0
-            cursos_final.append(curso)
-
-        # Ordenar por Elasticsearch
+        }
+        
+        if filters:
+            query["bool"]["filter"] = filters
+        
+        # Buscar em todos os 4 índices
+        indices = ["cursos_reservas", "cursos_em_producao", "cursos_lancados", "cursos_inativos"]
+        
+        cursos_final = []
+        
+        for index in indices:
+            try:
+                response = es_client.search(
+                    index=index,
+                    body={
+                        "query": query,
+                        "size": qtd_respostas,
+                        "min_score": 0.1
+                    }
+                )
+                
+                for hit in response.get("hits", {}).get("hits", []):
+                    doc = hit["_source"]
+                    score = hit.get("_score", 0)
+                    
+                    # Calcular score de vetor se embeddings estiverem disponíveis
+                    score_final = score
+                    
+                    curso = {
+                        "nome": doc.get("nome"),
+                        "coordenador": doc.get("coordenador"),
+                        "situacao": doc.get("situacao"),
+                        "versao": doc.get("versao"),
+                        "score": round(score_final, 2) * 100,  # Normalizando para porcentagem
+                        "score_nome": round(score_final, 2) * 100
+                    }
+                    cursos_final.append(curso)
+            except Exception as e:
+                print(f"Erro ao buscar no índice {index}: {e}")
+                continue
+        
+        # Remover duplicatas baseado no nome
+        nomes_vistos = set()
+        cursos_unicos = []
+        for curso in cursos_final:
+            if curso["nome"] not in nomes_vistos:
+                nomes_vistos.add(curso["nome"])
+                cursos_unicos.append(curso)
+        
+        cursos_final = cursos_unicos
+        
+        # Ordenar por score (Elasticsearch)
         cursos_final.sort(key=lambda x: x["score"], reverse=True)
 
         cursos_final = cursos_final[:qtd_respostas]
@@ -350,16 +450,16 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
             print(f"Aviso: Erro ao salvar cache: {e}")
 
         if card_id:
-            response = background_tasks.add_task(
+            background_tasks.add_task(
                 atualizar_pipefy,
                 card_id,
                 cursos_similares_str
             )
-            if response == "error":
-                return {"message": "Erro ao atualizar o campo do cartão no Pipefy.", "cursos_similares": cursos_similares_str}
         return result
 
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao processar requisição: {str(e)}")
 
