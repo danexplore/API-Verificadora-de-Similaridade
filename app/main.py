@@ -13,8 +13,9 @@ import re
 import json
 from functools import lru_cache
 import orjson
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBearer, HTTPBasic, HTTPBasicCredentials, HTTPAuthorizationCredentials
 from fastapi import Depends
+from fastapi import Request
 import secrets
 from pydantic import BaseModel
 from elasticsearch import Elasticsearch
@@ -246,6 +247,34 @@ if users_env:
             USERS[user.strip()] = pwd.strip()
 
 security = HTTPBasic()
+
+basic = HTTPBasic(auto_error=False)
+bearer = HTTPBearer(auto_error=False)
+
+API_TOKEN = os.getenv("API_TOKEN")  # defina no Render
+
+def auth_mixed(
+    request: Request,
+    basic_credentials: HTTPBasicCredentials = Depends(basic),
+    bearer_credentials: HTTPAuthorizationCredentials = Depends(bearer)
+):
+    # 1️⃣ Tenta Bearer (Pipefy)
+    if bearer_credentials:
+        if bearer_credentials.credentials == API_TOKEN:
+            return True
+
+    # 2️⃣ Fallback para Basic Auth (humano / curl)
+    if basic_credentials:
+        user = basic_credentials.username
+        pwd = basic_credentials.password
+        if USERS.get(user) == pwd:
+            return True
+
+    raise HTTPException(
+        status_code=401,
+        detail="Não autenticado"
+    )
+
 
 def verify_basic_auth(credentials: HTTPBasicCredentials = Depends(security)):
     password = USERS.get(credentials.username)
@@ -506,3 +535,4 @@ async def health_check():
 async def refresh_cache():
     redis.flushdb()
     return {"message": "Cache refreshed successfully."}
+
