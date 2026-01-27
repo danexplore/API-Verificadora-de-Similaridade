@@ -100,43 +100,34 @@ async def avaliar_relevancia_ia(nome, resumo, cursos):
 
     if len(cursos) == 1:
         instrucoes = (
-            "Você é um especialista em análise educacional. Com base no nome e resumo (se fornecido) do curso principal, "
-            "avalie semanticamente a similaridade com o curso listado. Considere que o curso pode ter diferenças de enfoque, "
-            "mas ainda assim pode ser relevante. Retorne:\n"
-            "- Uma nota de 1 a 5 estrelas (apenas número inteiro)\n"
-            "- Um comentário explicativo justificando a nota com um parágrafo\n\n"
-            "IMPORTANTE: sua resposta deve estar no formato JSON, sem texto adicional. Exemplo:\n"
-            '{"id": "1", "estrelas": 4, "comentario": "Tem grande relação temática, porém o enfoque é diferente."}'
+            "Você é um especialista em educação. Avalie a similaridade entre o curso principal e o curso listado de forma OBJETIVA.\n\n"
+            "ESCALA:\n"
+            "5 = Praticamente idênticos\n"
+            "4 = Muito similares\n"
+            "3 = Moderadamente similares\n"
+            "2 = Pouca similaridade\n"
+            "1 = Nenhuma relação\n\n"
+            "Retorne APENAS JSON sem texto adicional:\n"
+            '{"id": "0", "estrelas": 4, "comentario": "Ambos cobrem o mesmo tema"}'
         )
     else:
         instrucoes = (
-            "Avalie a relevância de cursos em relação a um curso principal com base em diferenças e semelhanças.\n\n"
-            "Foque nas diferenças práticas e teóricas entre os cursos listados e o curso principal, mesmo em casos de semelhança. "
-            "Avalie com uma nota de 1 a 5 estrelas, onde apenas números inteiros são usados.\n\n"
-            "# Instruções\n\n"
-            "- Para cada curso listado, avalie a relevância em relação ao curso principal usando uma nota de 1 a 5 estrelas. "
-            "Use apenas números inteiros.\n"
-            "- Ao fornecer um comentário, foque em como os cursos se diferenciam um do outro, além de suas semelhanças. "
-            "Se forem muito similares, destaque as diferenças práticas e teóricas que justificariam a oferta de ambos, ou se um curso pode sobrepor o outro.\n"
-            "- Se um curso receber menos de 3 estrelas, o campo de comentário deve permanecer vazio.\n\n"
-            "# Output Format\n\n"
-            "A saída deve estar no formato de lista JSON sem texto adicional fora desse formato.\n\n"
-            "# Examples\n\n"
-            "## Example Input:\n\n"
-            "- Curso principal: [Nome e resumo do curso principal]\n"
-            "- Cursos listados: \n"
-            "  1. Curso A: [Nome e resumo do curso A]\n"
-            "  2. Curso B: [Nome e resumo do curso B]\n\n"
-            "## Exemplo de Saída :\n\n"
+            "Você é um especialista em educação. Avalie cada curso comparando com o principal de forma OBJETIVA.\n\n"
+            "ESCALA:\n"
+            "5 = Praticamente idênticos\n"
+            "4 = Muito similares\n"
+            "3 = Moderadamente similares\n"
+            "2 = Pouca similaridade\n"
+            "1 = Nenhuma relação\n\n"
+            "REGRAS:\n"
+            "- Comentário OBRIGATÓRIO apenas se estrelas >= 3\n"
+            "- Comentário BREVE (máximo 10 palavras)\n"
+            "- Indique: diferenças de enfoque, público-alvo ou nível\n\n"
+            "Retorne APENAS JSON (lista), sem texto adicional:\n"
             "[\n"
-            "  {\"id\": \"1\", \"estrelas\": \"4\", \"comentario\": \"Embora ambos abordem o mesmo tema, este curso se concentra em aplicações práticas, enquanto o curso principal é mais teórico.\"},\n"
-            "  {\"id\": \"2\", \"estrelas\": \"3\", \"comentario\": \"Os cursos possuem similaridade temática, mas este foca mais em uma abordagem diferente de ensino.\"},\n"
-            "  {\"id\": \"3\", \"estrelas\": \"2\", \"comentario\": \"\"}\n"
-            "]\n\n"
-            "# Notas\n\n"
-            "- Avalie como os cursos podem ser diferentes um do outro e justifique esses pontos.\n"
-            "- Mantenha os comentários claros e específicos, indicando diferenças práticas, abordagens, ou focos de estudo.\n"
-            "- Utilize a escala de estrelas para ajudar a distinguir cursos que podem parecer similares, mas têm diferenças significativas a serem consideradas."
+            "  {\"id\": \"0\", \"estrelas\": 4, \"comentario\": \"Mesmo tema, enfoque diferente\"},\n"
+            "  {\"id\": \"1\", \"estrelas\": 2, \"comentario\": \"\"}\n"
+            "]"
         )
 
     payload = {
@@ -390,16 +381,18 @@ async def buscar_similaridade(payload: CourseSimilaritySearch, credentials: HTTP
                     doc = hit["_source"]
                     score = hit.get("_score", 0)
                     
-                    # Calcular score de vetor se embeddings estiverem disponíveis
-                    score_final = score
+                    # Normalizar score do Elasticsearch para porcentagem (0-100)
+                    # Score máximo do ES é geralmente 20-30, então dividimos por 30 e multiplicamos por 100
+                    # Isso dá uma distribuição mais realista
+                    normalized_score = min(100, max(0, (score / 30) * 100))
                     
                     curso = {
                         "nome": doc.get("nome"),
                         "coordenador": doc.get("coordenador"),
                         "situacao": doc.get("situacao"),
                         "versao": doc.get("versao"),
-                        "score": round(score_final, 2) * 100,  # Normalizando para porcentagem
-                        "score_nome": round(score_final, 2) * 100
+                        "score": round(normalized_score, 1),  # Score de 0 a 100
+                        "score_nome": round(normalized_score, 1)
                     }
                     cursos_final.append(curso)
             except Exception as e:

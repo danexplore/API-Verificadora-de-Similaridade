@@ -8,4 +8,13 @@ services:
       pip install --no-deps torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
       pip install -r requirements.txt
       python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/e5-base-v2')"
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+    startCommand: python -c "import uvicorn; uvicorn.run('app.main:app', host='0.0.0.0', port=10000)"
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: REDIS_URL
+        fromDatabase:
+          name: api-redis
+          property: connectionString
+      - key: ELASTICSEARCH_URL
+        value: ${ELASTICSEARCH_URL}
