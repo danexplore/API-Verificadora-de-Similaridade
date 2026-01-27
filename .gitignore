@@ -2,8 +2,11 @@
 .env
 .env.local
 .env.*.local
+dockerfile
 
 # Python
+gerenciar_elasticsearch.py
+migrar_para_elastic_cloud.py
 __pycache__/
 *.py[cod]
 *$py.class
